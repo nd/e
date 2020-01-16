@@ -425,27 +425,28 @@ void runEditor(E *e) {
   SDL_Event event;
   while (!e->quit) {
     int eventCount = 0;
+    SDL_StartTextInput();
     while (SDL_PollEvent(&event)) {
       eventCount++;
       switch (event.type) {
         case SDL_QUIT:
           e->quit = true;
           break;
+        case SDL_TEXTINPUT: {
+          size_t textLen = strlen(event.text.text);
+          for (size_t i = 0; i < textLen; i++) {
+            insertCharAtCursor(e, event.text.text[i]);
+          }
+          break;
+        }
         case SDL_KEYDOWN: {
-          // todo handle text correctly: support shifts
           SDL_Keycode keySym = event.key.keysym.sym;
           if (keySym == SDLK_RETURN) {
             insertCharAtCursor(e, '\n');
           } else if (keySym == SDLK_TAB) { // ignore if editor just got focus
-            // insert space for tab
-            // render = true;
-          } else if (keySym > SDLK_TAB && keySym <= SDLK_z) {
-            if (event.key.keysym.mod & KMOD_CTRL) {
-              saveFile(e);
-            } else {
-              // todo: how to support upper case letters?
-              insertCharAtCursor(e, (char) keySym);
-            }
+            // insertCharAtCursor(e, '\t');
+          } else if (keySym == SDLK_s && event.key.keysym.mod & KMOD_CTRL) {
+            saveFile(e);
           } else if (keySym == SDLK_DELETE) {
             deleteCharAtCursor(e);
           } else if (keySym == SDLK_LEFT && e->cursor > 0) {
