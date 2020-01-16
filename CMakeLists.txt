@@ -16,4 +16,4 @@ include_directories(${SDL2_INCLUDE_DIRS} ${SDL_IMAGE_INCLUDE_DIRS}, ${SDL_TTF_IN
 include_directories("/home/nd/p/practice-c/lib")
 
 add_executable(e main.c)
-target_link_libraries(e ${SDL2_LIBRARIES} ${SDL_TTF_LIBRARIES} ${FREETYPE_LIBRARIES})
+target_link_libraries(e ${SDL2_LIBRARIES} ${SDL_TTF_LIBRARIES} ${FREETYPE_LIBRARIES} m)

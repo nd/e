@@ -6,6 +6,8 @@
 #include <SDL_ttf.h>
 #include <assert.h>
 
+#define MIN(a, b) (a < b) ? (a) : (b)
+
 int die(char *msg) {
   if (errno) {
     perror(msg);
@@ -26,6 +28,17 @@ typedef struct E {
   size_t cursor;
   int height;
   int width;
+
+  int lineHeight;
+  int visibleLineCursor;
+  int visibleLineCount;
+  int visibleLineTop;
+
+  int columnWidth;
+  int columnCursor;
+  int columnCount;
+  int columnLeft;
+
   TTF_Font *font;
   SDL_Window *window;
   SDL_Renderer *renderer;
@@ -77,6 +90,35 @@ E init(char *path) {
 }
 
 
+SDL_Texture *createLineTexture(E *e, char *text, SDL_Color fg, SDL_Color bg) {
+  SDL_Surface *surface = TTF_RenderText(e->font, text, fg, bg);
+  if (!surface) {
+    setEditorError(e, TTF_GetError());
+    return 0;
+  }
+  SDL_Texture *texture = SDL_CreateTextureFromSurface(e->renderer, surface);
+  if (!texture) {
+    setEditorError(e, SDL_GetError());
+    return 0;
+  }
+  return texture;
+}
+
+
+void initVisibleLines(E *e) {
+  e->lineHeight = TTF_FontHeight(e->font);
+  e->visibleLineCount = floor(e->height * 1.0 / e->lineHeight);
+
+  SDL_Texture* texture = createLineTexture(e, "A", (SDL_Color){0}, (SDL_Color){0});
+  int w = 0;
+  int h = 0;
+  SDL_QueryTexture(texture, 0, 0, &w, &h);
+  e->columnWidth = w;
+  e->columnCount = floor(e->width * 1.0 / e->columnWidth);
+  SDL_DestroyTexture(texture);
+}
+
+
 bool initUI(E *e) {
   if (SDL_Init(SDL_INIT_VIDEO) < 0) {
     setEditorError(e, SDL_GetError());
@@ -101,6 +143,7 @@ bool initUI(E *e) {
     setEditorError(e, SDL_GetError());
     return false;
   }
+  initVisibleLines(e);
   return true;
 }
 
@@ -126,18 +169,17 @@ void closeEditor(E *e) {
 }
 
 
-SDL_Texture *createLineTexture(E *e, char *text, SDL_Color fg, SDL_Color bg) {
-  SDL_Surface *surface = TTF_RenderText(e->font, text, fg, bg);
-  if (!surface) {
-    setEditorError(e, TTF_GetError());
-    return 0;
+int getCursorOffsetInLine(E *e) {
+  int result = 0;
+  if (e->cursor > 0) {
+    for (size_t i = e->cursor - 1; i <= e->cursor; i--) {
+      if (e->text[i] == '\n') {
+        break;
+      }
+      result++;
+    }
   }
-  SDL_Texture *texture = SDL_CreateTextureFromSurface(e->renderer, surface);
-  if (!texture) {
-    setEditorError(e, SDL_GetError());
-    return 0;
-  }
-  return texture;
+  return result;
 }
 
 
@@ -178,25 +220,55 @@ bool lineIterNext(LineIter *iter) {
 }
 
 
+int getCurrentLineIndex(E *e) {
+  LineIter iter = {.text = e->text, .textLen = e->textLen};
+  int result = 0;
+  while (lineIterNext(&iter)) {
+    if (iter.lineStart <= e->cursor && e->cursor <= iter.lineStart + iter.lineLen) {
+      break;
+    }
+    result++;
+  }
+  return result;
+}
+
 void renderText(E *e) {
   SDL_SetRenderDrawColor(e->renderer, 0xff, 0xff, 0xff, 0xff);
   SDL_RenderClear(e->renderer);
-  LineIter iter = {.text = e->text, .textLen = e->textLen};
+  int currentLine = getCurrentLineIndex(e);
+  int firstLine = e->visibleLineTop;
+  LineIter iter = (LineIter){.text = e->text, .textLen = e->textLen};
   int y = 0;
   SDL_Color bg = {0xff, 0xff, 0xff, 0xff};
   SDL_Color fg = {0};
   SDL_Color bgCursor = {0, 0, 0xff, 0xff};
   SDL_Color fgCursor = {0xff, 0xff, 0xff, 0xff};
+  int lineNum = 0;
   while (lineIterNext(&iter)) {
+    if (lineNum < firstLine) {
+      lineNum++;
+      continue;
+    }
     // todo is it ok to create/destroy a texture for every line?
-    e->lineBuf = xrealloc(e->lineBuf, iter.lineLen + 2); // space + \0, space allows to put cursor after line end
-    strncpy(e->lineBuf, iter.text + iter.lineStart, iter.lineLen);
-    e->lineBuf[iter.lineLen] = ' ';
-    e->lineBuf[iter.lineLen + 1] = '\0';
+
+    char *text = iter.text;
+    int lineLen = iter.lineLen;
+    if (lineLen < e->columnLeft) {
+      y += e->lineHeight;
+      lineNum++;
+      continue;
+    }
+    lineLen -= e->columnLeft;
+    int lineStart = iter.lineStart + e->columnLeft;
+    e->lineBuf = xrealloc(e->lineBuf, lineLen + 2); // space + \0, space allows to put cursor after line end
+    strncpy(e->lineBuf, text + lineStart, lineLen);
+    e->lineBuf[lineLen] = ' ';
+    e->lineBuf[lineLen + 1] = '\0';
+
     int w = 0, h = 0;
     SDL_Rect dstRect = {0};
-    if (iter.lineStart <= e->cursor && e->cursor <= iter.lineStart + iter.lineLen) { // line contains cursor
-      int cursorLineOffset = ((int)e->cursor) - iter.lineStart;
+    if (lineNum == currentLine) {
+      int cursorLineOffset = ((int)e->cursor) - lineStart;
       // draw part of line before cursor
       char ch = 0;
       SDL_Texture *texture = 0;
@@ -223,7 +295,7 @@ void renderText(E *e) {
       e->lineBuf[cursorLineOffset + 1] = ch;
 
       // draw rest of line after cursor
-      if (cursorLineOffset < iter.lineLen) {
+      if (cursorLineOffset < lineLen) {
         texture = createLineTexture(e, &e->lineBuf[cursorLineOffset + 1], fg, bg);
         int widthAfterCursor = widthBeforeCursor + w;
         SDL_QueryTexture(texture, 0, 0, &w, &h);
@@ -238,7 +310,11 @@ void renderText(E *e) {
       SDL_RenderCopy(e->renderer, texture, 0, &dstRect);
       SDL_DestroyTexture(texture);
     }
-    y += h;
+    if (y > e->height) {
+      break;
+    }
+    y += e->lineHeight;
+    lineNum++;
   }
   SDL_RenderPresent(e->renderer);
 }
@@ -255,6 +331,14 @@ void insertCharAtCursor(E *e, char c) {
   e->text = newText;
   e->textLen = newTextLen;
   e->cursor++;
+  if (c == '\n') {
+    if (e->visibleLineCursor < e->visibleLineCount - 1) {
+      e->visibleLineCursor++;
+    } else {
+      e->visibleLineTop++;
+    }
+    e->columnLeft = 0;
+  }
 }
 
 void deleteCharAtCursor(E *e) {
@@ -291,16 +375,64 @@ void saveFile(E *e) {
   }
 }
 
+void moveLeft(E *e) {
+  if (e->cursor > 0) {
+    e->cursor--;
+    if (e->text[e->cursor] == '\n') {
+      if (e->visibleLineCursor > 0) {
+        e->visibleLineCursor--;
+      } else if (e->visibleLineTop > 0) {
+        e->visibleLineTop--;
+      }
+      int cursorOffset = getCursorOffsetInLine(e);
+      if (cursorOffset >= e->columnCount) {
+        e->columnLeft = cursorOffset - e->columnCount;
+      }
+      e->columnCursor = MIN(e->columnCount, cursorOffset);
+    } else {
+      if (e->columnCursor > 0) {
+        e->columnCursor--;
+      } else if (e->columnLeft > 0) {
+        e->columnLeft--;
+      }
+    }
+  }
+}
+
+void moveRight(E *e) {
+  if (e->cursor < e->textLen) {
+    if (e->text[e->cursor] == '\n') {
+      if (e->visibleLineCursor < e->visibleLineCount - 1) {
+        e->visibleLineCursor++;
+      } else {
+        e->visibleLineTop++;
+      }
+      e->columnCursor = 0;
+      e->columnLeft = 0;
+    } else {
+      if (e->columnCursor < e->columnCount - 1) {
+        e->columnCursor++;
+      } else {
+        e->columnLeft++;
+      }
+    }
+    e->cursor++;
+  }
+}
+
 void runEditor(E *e) {
   renderText(e);
   SDL_Event event;
   while (!e->quit) {
+    int eventCount = 0;
     while (SDL_PollEvent(&event)) {
+      eventCount++;
       switch (event.type) {
         case SDL_QUIT:
           e->quit = true;
           break;
         case SDL_KEYDOWN: {
+          // todo handle text correctly: support shifts
           SDL_Keycode keySym = event.key.keysym.sym;
           if (keySym == SDLK_RETURN) {
             insertCharAtCursor(e, '\n');
@@ -317,15 +449,16 @@ void runEditor(E *e) {
           } else if (keySym == SDLK_DELETE) {
             deleteCharAtCursor(e);
           } else if (keySym == SDLK_LEFT && e->cursor > 0) {
-            e->cursor--;
+            moveLeft(e);
           } else if (keySym == SDLK_RIGHT && e->cursor < e->textLen) {
-            e->cursor++;
+            moveRight(e);
           }
           break;
         }
       }
       renderText(e);
     }
+    SDL_Delay(1);
   }
 }
 
