@@ -1,10 +1,13 @@
+#include <ctype.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <SDL.h>
-#include <SDL_ttf.h>
 #include <assert.h>
+
+#include <ft2build.h>
+#include FT_FREETYPE_H
 
 #define MIN(a, b) (a < b) ? (a) : (b)
 
@@ -17,6 +20,15 @@ int die(char *msg) {
   exit(EXIT_FAILURE);
 }
 
+
+typedef struct E_Glyph {
+  SDL_Texture *texture;
+  int h;
+  int w;
+  int bearingX;
+  int bearingY;
+  int advance;
+} E_Glyph;
 
 typedef struct E {
   const char *path;
@@ -39,9 +51,13 @@ typedef struct E {
   int columnCount;
   int columnLeft;
 
-  TTF_Font *font;
   SDL_Window *window;
   SDL_Renderer *renderer;
+
+  FT_Library ftLib;
+  FT_Face ftFace;
+  E_Glyph glyphs[256];
+  FT_Pos kerning[256 * 256];
 } E;
 
 
@@ -80,57 +96,119 @@ E init(char *path) {
   fread(text, fileSize, 1, file);
   text[fileSize] = '\0';
   fclose(file);
+
+  FT_Library ftLib;
+  FT_Error error = FT_Init_FreeType(&ftLib);
+  if (error) {
+    die("Failed to init ft");
+  }
+
   return (E) {
           .path = path,
           .height=768,
           .width=1024,
           .text = text,
           .textLen = strlen(text),
+          .ftLib = ftLib,
   };
 }
 
 
-SDL_Texture *createLineTexture(E *e, char *text, SDL_Color fg, SDL_Color bg) {
-  SDL_Surface *surface = TTF_RenderText(e->font, text, fg, bg);
-  if (!surface) {
-    setEditorError(e, TTF_GetError());
-    return 0;
-  }
-  SDL_Texture *texture = SDL_CreateTextureFromSurface(e->renderer, surface);
-  if (!texture) {
-    setEditorError(e, SDL_GetError());
-    return 0;
-  }
-  return texture;
+void initVisibleLines(E *e) {
+  e->lineHeight = e->ftFace->size->metrics.height >> 6;
+  e->visibleLineCount = floor(e->height * 1.0 / e->lineHeight);
+
+  E_Glyph glyph = e->glyphs['A'];
+  e->columnWidth = glyph.advance;
+  e->columnCount = floor(e->width * 1.0 / e->columnWidth);
 }
 
 
-void initVisibleLines(E *e) {
-  e->lineHeight = TTF_FontHeight(e->font);
-  e->visibleLineCount = floor(e->height * 1.0 / e->lineHeight);
+void setKerning(E *e, char left, char right, int kerning) {
+  e->kerning[left * 256 + right] = kerning;
+}
 
-  SDL_Texture* texture = createLineTexture(e, "A", (SDL_Color){0}, (SDL_Color){0});
-  int w = 0;
-  int h = 0;
-  SDL_QueryTexture(texture, 0, 0, &w, &h);
-  e->columnWidth = w;
-  e->columnCount = floor(e->width * 1.0 / e->columnWidth);
-  SDL_DestroyTexture(texture);
+int getKerning(E *e, char left, char right) {
+  return e->kerning[left * 256 + right];
+}
+
+bool initFont(E *e) {
+  FT_Face face;
+  FT_Error error = FT_New_Face(e->ftLib, "/home/nd/Downloads/JetBrainsMono-Regular.ttf", 0, &face);
+  if (error) {
+    e->error = "Failed to init face";
+    return false;
+  }
+  e->ftFace = face;
+  int fontSize = 14;
+  error = FT_Set_Char_Size(face, 0, fontSize*64, 96, 96);
+  if (error) {
+    e->error = "Failed to init font size";
+    return false;
+  }
+
+  Uint8 alpha_table[256];
+  for (int i = 0; i < SDL_arraysize(alpha_table); ++i) {
+    alpha_table[i] = (Uint8)i;
+  }
+
+  for (int c = 0; c < 255; c++) {
+    if (isprint(c)) {
+      error = FT_Load_Char(face, c, FT_LOAD_RENDER);
+      if (error) {
+        continue;
+      }
+      FT_GlyphSlot glyph = face->glyph;
+      FT_Bitmap bitmap = glyph->bitmap;
+      SDL_Texture *texture = 0;
+      if (bitmap.rows) {
+        SDL_Surface *surface = SDL_CreateRGBSurface(0, bitmap.width, bitmap.rows, 32, 0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000);
+        for (int i = 0; i < bitmap.rows; i++) {
+          int srcRowStart = i * bitmap.pitch;
+          Uint32 *dst = (Uint32 *)surface->pixels + i * surface->pitch / 4;
+          for (int j = 0; j < bitmap.width; j++) {
+            unsigned char gray = bitmap.buffer[srcRowStart + j];
+            Uint8 alpha = alpha_table[gray];
+            Uint32 pixel = ((Uint32) alpha << 24);
+            *dst++ = pixel;
+          }
+        }
+        texture = SDL_CreateTextureFromSurface(e->renderer, surface);
+        SDL_FreeSurface(surface);
+      }
+
+      e->glyphs[c] = (E_Glyph){
+              .texture = texture,
+              .h = bitmap.rows,
+              .w = bitmap.width,
+              .bearingX = glyph->metrics.horiBearingX >> 6,
+              .bearingY = glyph->metrics.horiBearingY >> 6,
+              .advance = glyph->metrics.horiAdvance >> 6,
+      };
+    }
+  }
+  if (FT_HAS_KERNING(face)) {
+    for (int left = 0; left < 255; left++) {
+      if (isprint(left)) {
+        FT_UInt leftIndex = FT_Get_Char_Index(face, left);
+        for (int right = 0; right < 255; right++) {
+          if (isprint(right)) {
+            FT_UInt rightIndex = FT_Get_Char_Index(face, right);
+            FT_Vector kerning = {0};
+            FT_Get_Kerning(face, leftIndex, rightIndex, FT_KERNING_DEFAULT, &kerning);
+            setKerning(e, left, right, kerning.x >> 6);
+          }
+        }
+      }
+    }
+  }
+  return true;
 }
 
 
 bool initUI(E *e) {
   if (SDL_Init(SDL_INIT_VIDEO) < 0) {
     setEditorError(e, SDL_GetError());
-    return false;
-  }
-  if (TTF_Init() == -1) {
-    setEditorError(e, TTF_GetError());
-    return false;
-  }
-  e->font = TTF_OpenFont("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 16);
-  if (!e->font) {
-    setEditorError(e, TTF_GetError());
     return false;
   }
   e->window = SDL_CreateWindow(e->path, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, e->width, e->height, SDL_WINDOW_SHOWN);
@@ -141,6 +219,9 @@ bool initUI(E *e) {
   e->renderer = SDL_CreateRenderer(e->window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC );
   if (!e->renderer) {
     setEditorError(e, SDL_GetError());
+    return false;
+  }
+  if (!initFont(e)) {
     return false;
   }
   initVisibleLines(e);
@@ -155,8 +236,8 @@ void closeEditor(E *e) {
   if (e->lineBuf) {
     free(e->lineBuf);
   }
-  if (e->font) {
-    TTF_CloseFont(e->font);
+  if (e->ftLib) {
+    FT_Done_FreeType(e->ftLib);
   }
   if (e->renderer) {
     SDL_DestroyRenderer(e->renderer);
@@ -164,7 +245,6 @@ void closeEditor(E *e) {
   if (e->window) {
     SDL_DestroyWindow(e->window);
   }
-  TTF_Quit();
   SDL_Quit();
 }
 
@@ -232,29 +312,77 @@ int getCurrentLineIndex(E *e) {
   return result;
 }
 
+void renderCursor(E *e, int penX, int penY) {
+  Uint8 r = 0, g = 0, b = 0, a = 0;
+  SDL_GetRenderDrawColor(e->renderer, &r, &g, &b, &a);
+  SDL_SetRenderDrawColor(e->renderer, 0x0, 0x0, 0xff, 0xf);
+  SDL_Rect cursorRect = {penX, penY - e->lineHeight, 2, e->lineHeight + 5};
+  SDL_RenderFillRect(e->renderer, &cursorRect);
+  SDL_SetRenderDrawColor(e->renderer, r, g, b, a);
+}
+
+void renderGlyph(E *e, E_Glyph *glyph, int penX, int penY, bool drawGlyphBox) {
+  if (glyph->texture) {
+    if (drawGlyphBox) {
+      Uint8 r = 0, g = 0, b = 0, a = 0;
+      SDL_GetRenderDrawColor(e->renderer, &r, &g, &b, &a);
+      SDL_SetRenderDrawColor(e->renderer, 0xff, 0x0, 0x0, 0xf);
+      SDL_RenderDrawLine(e->renderer, penX + glyph->bearingX, penY - glyph->bearingY, penX + + glyph->bearingX + glyph->w, penY - glyph->bearingY);
+      SDL_RenderDrawLine(e->renderer, penX + glyph->bearingX, penY - glyph->bearingY + glyph->h, penX + glyph->bearingX + glyph->w, penY - glyph->bearingY + glyph->h);
+      SDL_RenderDrawLine(e->renderer, penX + glyph->bearingX, penY - glyph->bearingY, penX + glyph->bearingX, penY - glyph->bearingY + glyph->h);
+      SDL_RenderDrawLine(e->renderer, penX + glyph->bearingX + glyph->w, penY - glyph->bearingY, penX + glyph->bearingX + glyph->w, penY - glyph->bearingY + glyph->h);
+      SDL_SetRenderDrawColor(e->renderer, r, g, b, a);
+    }
+    SDL_Rect dstRect = (SDL_Rect){penX + glyph->bearingX, penY - glyph->bearingY, glyph->w, glyph->h};
+    SDL_RenderCopy(e->renderer, glyph->texture, 0, &dstRect);
+  }
+}
+
+void debugRender(E *e) {
+  SDL_SetRenderDrawColor(e->renderer, 0xff, 0xff, 0xff, 0xff);
+  SDL_RenderClear(e->renderer);
+
+  int penx = 300, peny = 400;
+
+  SDL_SetRenderDrawColor(e->renderer, 0x0, 0x0, 0xff, 0xff);
+  SDL_RenderDrawLine(e->renderer, penx, peny-50, penx, peny+50);
+  SDL_RenderDrawLine(e->renderer, penx - 50, peny, penx + 50, peny);
+
+  SDL_SetRenderDrawColor(e->renderer, 0x0, 0x0, 0x0, 0xff);
+  char *txt = "public static void Main() {}";
+  char prev = 0;
+  for (int i = 0; i < strlen(txt); i++) {
+    char c = txt[i];
+    E_Glyph *glyph = &e->glyphs[c];
+    renderGlyph(e, glyph, penx, peny, false);
+    penx += glyph->advance;
+    if (prev) {
+      penx += getKerning(e, prev, c);
+    }
+    prev = c;
+  }
+  SDL_RenderPresent(e->renderer);
+}
+
 void renderText(E *e) {
   SDL_SetRenderDrawColor(e->renderer, 0xff, 0xff, 0xff, 0xff);
   SDL_RenderClear(e->renderer);
   int currentLine = getCurrentLineIndex(e);
   int firstLine = e->visibleLineTop;
   LineIter iter = (LineIter){.text = e->text, .textLen = e->textLen};
-  int y = 0;
-  SDL_Color bg = {0xff, 0xff, 0xff, 0xff};
-  SDL_Color fg = {0};
-  SDL_Color bgCursor = {0, 0, 0xff, 0xff};
-  SDL_Color fgCursor = {0xff, 0xff, 0xff, 0xff};
+  int penY = e->lineHeight;
   int lineNum = 0;
+  char prev = 0;
   while (lineIterNext(&iter)) {
     if (lineNum < firstLine) {
       lineNum++;
       continue;
     }
-    // todo is it ok to create/destroy a texture for every line?
 
     char *text = iter.text;
     int lineLen = iter.lineLen;
     if (lineLen < e->columnLeft) {
-      y += e->lineHeight;
+      penY += e->lineHeight;
       lineNum++;
       continue;
     }
@@ -265,55 +393,25 @@ void renderText(E *e) {
     e->lineBuf[lineLen] = ' ';
     e->lineBuf[lineLen + 1] = '\0';
 
-    int w = 0, h = 0;
-    SDL_Rect dstRect = {0};
-    if (lineNum == currentLine) {
-      int cursorLineOffset = ((int)e->cursor) - lineStart;
-      // draw part of line before cursor
-      char ch = 0;
-      SDL_Texture *texture = 0;
-      if (cursorLineOffset > 0) {
-        ch = e->lineBuf[cursorLineOffset];
-        e->lineBuf[cursorLineOffset] = '\0';
-        texture = createLineTexture(e, e->lineBuf, fg, bg);
-        SDL_QueryTexture(texture, 0, 0, &w, &h);
-        dstRect = (SDL_Rect){0, y, w, h};
-        SDL_RenderCopy(e->renderer, texture, 0, &dstRect);
-        SDL_DestroyTexture(texture);
-        e->lineBuf[cursorLineOffset] = ch;
+    int penX = 0;
+    int cursorLineOffset = lineNum == currentLine ? ((int)e->cursor) - lineStart : -1;
+    for (int i = 0; i < strlen(e->lineBuf); i++) {
+      if (i == cursorLineOffset) {
+        renderCursor(e, penX, penY);
       }
-
-      // draw char with cursor
-      ch = e->lineBuf[cursorLineOffset + 1];
-      e->lineBuf[cursorLineOffset + 1] = '\0';
-      texture = createLineTexture(e, &e->lineBuf[cursorLineOffset], fgCursor, bgCursor);
-      int widthBeforeCursor = w;
-      SDL_QueryTexture(texture, 0, 0, &w, &h);
-      dstRect = (SDL_Rect){widthBeforeCursor, y, w, h};
-      SDL_RenderCopy(e->renderer, texture, 0, &dstRect);
-      SDL_DestroyTexture(texture);
-      e->lineBuf[cursorLineOffset + 1] = ch;
-
-      // draw rest of line after cursor
-      if (cursorLineOffset < lineLen) {
-        texture = createLineTexture(e, &e->lineBuf[cursorLineOffset + 1], fg, bg);
-        int widthAfterCursor = widthBeforeCursor + w;
-        SDL_QueryTexture(texture, 0, 0, &w, &h);
-        dstRect = (SDL_Rect){widthAfterCursor, y, w, h};
-        SDL_RenderCopy(e->renderer, texture, 0, &dstRect);
-        SDL_DestroyTexture(texture);
+      char c = e->lineBuf[i];
+      E_Glyph *glyph = &e->glyphs[c];
+      renderGlyph(e, glyph, penX, penY, false);
+      penX += glyph->advance;
+      if (prev) {
+        penX += getKerning(e, prev, c);
       }
-    } else {
-      SDL_Texture *texture = createLineTexture(e, e->lineBuf, fg, bg);
-      SDL_QueryTexture(texture, 0, 0, &w, &h);
-      dstRect = (SDL_Rect){0, y, w, h};
-      SDL_RenderCopy(e->renderer, texture, 0, &dstRect);
-      SDL_DestroyTexture(texture);
+      prev = c;
     }
-    if (y > e->height) {
+    if (penY > e->height) {
       break;
     }
-    y += e->lineHeight;
+    penY += e->lineHeight;
     lineNum++;
   }
   SDL_RenderPresent(e->renderer);
@@ -423,6 +521,7 @@ void moveRight(E *e) {
 void runEditor(E *e) {
   renderText(e);
   SDL_Event event;
+  bool render = true;
   while (!e->quit) {
     int eventCount = 0;
     SDL_StartTextInput();
@@ -445,6 +544,19 @@ void runEditor(E *e) {
             insertCharAtCursor(e, '\n');
           } else if (keySym == SDLK_TAB) { // ignore if editor just got focus
             // insertCharAtCursor(e, '\t');
+          } else if (event.key.keysym.mod & KMOD_CTRL) {
+            switch (keySym) {
+              case SDLK_s:
+                saveFile(e);
+                break;
+              case SDLK_r:
+                render = false;
+                debugRender(e);
+                break;
+              case SDLK_e:
+                render = true;
+                break;
+            }
           } else if (keySym == SDLK_s && event.key.keysym.mod & KMOD_CTRL) {
             saveFile(e);
           } else if (keySym == SDLK_DELETE) {
@@ -457,7 +569,9 @@ void runEditor(E *e) {
           break;
         }
       }
-      renderText(e);
+      if (render) {
+        renderText(e);
+      }
     }
     SDL_Delay(1);
   }

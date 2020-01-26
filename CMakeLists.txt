@@ -8,9 +8,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address -fno-omit-frame-pointer -
 find_package(SDL2 REQUIRED)
 
 find_package(Freetype REQUIRED)
-set(SDL_TTF_INCLUDE_DIR /usr/include/SDL2)
-set(SDL_TTF_LIBRARY /usr/lib/x86_64-linux-gnu/libSDL2_ttf.a)
-find_package(SDL_ttf REQUIRED)
+include_directories(${FREETYPE_INCLUDE_DIRS})
 
 include_directories(${SDL2_INCLUDE_DIRS} ${SDL_IMAGE_INCLUDE_DIRS}, ${SDL_TTF_INCLUDE_DIRS})
 include_directories("/home/nd/p/practice-c/lib")
