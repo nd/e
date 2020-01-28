@@ -58,6 +58,8 @@ typedef struct E {
   FT_Face ftFace;
   E_Glyph glyphs[256];
   FT_Pos kerning[256 * 256];
+
+  Uint64 perfCountFreqMS;
 } E;
 
 
@@ -110,6 +112,7 @@ E init(char *path) {
           .text = text,
           .textLen = strlen(text),
           .ftLib = ftLib,
+          .perfCountFreqMS = SDL_GetPerformanceFrequency() / 1000,
   };
 }
 
@@ -338,6 +341,20 @@ void renderGlyph(E *e, E_Glyph *glyph, int penX, int penY, bool drawGlyphBox) {
   }
 }
 
+void renderLine(E *e, char *line, size_t size, int penX, int penY) {
+  char prev = 0;
+  for (int i = 0; i < size; i++) {
+    char c = line[i];
+    E_Glyph *glyph = &e->glyphs[c];
+    renderGlyph(e, glyph, penX, penY, false);
+    penX += glyph->advance;
+    if (prev) {
+      penX += getKerning(e, prev, c);
+    }
+    prev = c;
+  }
+}
+
 void debugRender(E *e) {
   SDL_SetRenderDrawColor(e->renderer, 0xff, 0xff, 0xff, 0xff);
   SDL_RenderClear(e->renderer);
@@ -414,6 +431,19 @@ void renderText(E *e) {
     penY += e->lineHeight;
     lineNum++;
   }
+}
+
+void updateUI(E *e) {
+  Uint64 t0 = SDL_GetPerformanceCounter();
+  renderText(e);
+  Uint64 t1 = SDL_GetPerformanceCounter();
+  char rateStr[5] = {0};
+  double duration = (t1 - t0) * 1.0 / e->perfCountFreqMS;
+  if (duration > 1000) {
+    duration = 1000;
+  }
+  sprintf(rateStr, "%.1f", duration);
+  renderLine(e, rateStr, strlen(rateStr), e->width - 70, e->height - e->lineHeight);
   SDL_RenderPresent(e->renderer);
 }
 
@@ -519,7 +549,7 @@ void moveRight(E *e) {
 }
 
 void runEditor(E *e) {
-  renderText(e);
+  updateUI(e);
   SDL_Event event;
   bool render = true;
   while (!e->quit) {
@@ -570,7 +600,7 @@ void runEditor(E *e) {
         }
       }
       if (render) {
-        renderText(e);
+        updateUI(e);
       }
     }
     SDL_Delay(1);
