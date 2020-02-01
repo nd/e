@@ -28,6 +28,7 @@ typedef struct E_Glyph {
   int bearingX;
   int bearingY;
   int advance;
+  bool initialized;
 } E_Glyph;
 
 typedef struct E {
@@ -127,11 +128,11 @@ void initVisibleLines(E *e) {
 }
 
 
-void setKerning(E *e, char left, char right, int kerning) {
+void setKerning(E *e, unsigned char left, unsigned char right, int kerning) {
   e->kerning[left * 256 + right] = kerning;
 }
 
-int getKerning(E *e, char left, char right) {
+int getKerning(E *e, unsigned char left, unsigned char right) {
   return e->kerning[left * 256 + right];
 }
 
@@ -187,6 +188,7 @@ bool initFont(E *e) {
               .bearingX = glyph->metrics.horiBearingX >> 6,
               .bearingY = glyph->metrics.horiBearingY >> 6,
               .advance = glyph->metrics.horiAdvance >> 6,
+              .initialized = true,
       };
     }
   }
@@ -325,7 +327,7 @@ void renderCursor(E *e, int penX, int penY) {
 }
 
 void renderGlyph(E *e, E_Glyph *glyph, int penX, int penY, bool drawGlyphBox) {
-  if (glyph->texture) {
+  if (glyph && glyph->texture) {
     if (drawGlyphBox) {
       Uint8 r = 0, g = 0, b = 0, a = 0;
       SDL_GetRenderDrawColor(e->renderer, &r, &g, &b, &a);
@@ -341,11 +343,15 @@ void renderGlyph(E *e, E_Glyph *glyph, int penX, int penY, bool drawGlyphBox) {
   }
 }
 
+E_Glyph *getGlyph(E *e, unsigned char c) {
+  return e->glyphs[c].initialized ? &e->glyphs[c] : &e->glyphs['?'];
+}
+
 void renderLine(E *e, char *line, size_t size, int penX, int penY) {
   char prev = 0;
   for (int i = 0; i < size; i++) {
     char c = line[i];
-    E_Glyph *glyph = &e->glyphs[c];
+    E_Glyph *glyph = getGlyph(e, c);
     renderGlyph(e, glyph, penX, penY, false);
     penX += glyph->advance;
     if (prev) {
@@ -370,7 +376,7 @@ void debugRender(E *e) {
   char prev = 0;
   for (int i = 0; i < strlen(txt); i++) {
     char c = txt[i];
-    E_Glyph *glyph = &e->glyphs[c];
+    E_Glyph *glyph = getGlyph(e, c);
     renderGlyph(e, glyph, penx, peny, false);
     penx += glyph->advance;
     if (prev) {
@@ -417,7 +423,7 @@ void renderText(E *e) {
         renderCursor(e, penX, penY);
       }
       char c = e->lineBuf[i];
-      E_Glyph *glyph = &e->glyphs[c];
+      E_Glyph *glyph = getGlyph(e, c);
       renderGlyph(e, glyph, penX, penY, false);
       penX += glyph->advance;
       if (prev) {
