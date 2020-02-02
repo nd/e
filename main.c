@@ -413,6 +413,9 @@ void renderText(E *e) {
     int lineEnd = iter.lineStart + iter.lineLen;
     int penX = 0;
     for (int i = lineStart; i < lineEnd; i++) {
+      if (penX > e->width) {
+        break;
+      }
       if (lineNum == currentLine && i == e->cursor) {
         renderCursor(e, penX, penY);
       }
@@ -426,10 +429,12 @@ void renderText(E *e) {
       prev = c;
     }
     // space in the end of line to be able to continue it
-    if (lineNum == currentLine && lineEnd == e->cursor) {
-      renderCursor(e, penX, penY);
+    if (penX < e->width) {
+      if (lineNum == currentLine && lineEnd == e->cursor) {
+        renderCursor(e, penX, penY);
+      }
+      renderGlyph(e, getGlyph(e, ' '), penX, penY, false);
     }
-    renderGlyph(e, getGlyph(e, ' '), penX, penY, false);
 
     if (penY > e->height) {
       break;
