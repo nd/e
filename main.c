@@ -144,7 +144,7 @@ bool initFont(E *e) {
     return false;
   }
   e->ftFace = face;
-  int fontSize = 14;
+  int fontSize = 12;
   error = FT_Set_Char_Size(face, 0, fontSize*64, 96, 96);
   if (error) {
     e->error = "Failed to init font size";
@@ -402,27 +402,21 @@ void renderText(E *e) {
       continue;
     }
 
-    char *text = iter.text;
     int lineLen = iter.lineLen;
     if (lineLen < e->columnLeft) {
       penY += e->lineHeight;
       lineNum++;
       continue;
     }
-    lineLen -= e->columnLeft;
-    int lineStart = iter.lineStart + e->columnLeft;
-    e->lineBuf = xrealloc(e->lineBuf, lineLen + 2); // space + \0, space allows to put cursor after line end
-    strncpy(e->lineBuf, text + lineStart, lineLen);
-    e->lineBuf[lineLen] = ' ';
-    e->lineBuf[lineLen + 1] = '\0';
 
+    int lineStart = iter.lineStart + e->columnLeft;
+    int lineEnd = iter.lineStart + iter.lineLen;
     int penX = 0;
-    int cursorLineOffset = lineNum == currentLine ? ((int)e->cursor) - lineStart : -1;
-    for (int i = 0; i < strlen(e->lineBuf); i++) {
-      if (i == cursorLineOffset) {
+    for (int i = lineStart; i < lineEnd; i++) {
+      if (lineNum == currentLine && i == e->cursor) {
         renderCursor(e, penX, penY);
       }
-      char c = e->lineBuf[i];
+      char c = e->text[i];
       E_Glyph *glyph = getGlyph(e, c);
       renderGlyph(e, glyph, penX, penY, false);
       penX += glyph->advance;
@@ -431,6 +425,12 @@ void renderText(E *e) {
       }
       prev = c;
     }
+    // space in the end of line to be able to continue it
+    if (lineNum == currentLine && lineEnd == e->cursor) {
+      renderCursor(e, penX, penY);
+    }
+    renderGlyph(e, getGlyph(e, ' '), penX, penY, false);
+
     if (penY > e->height) {
       break;
     }
@@ -572,6 +572,7 @@ void runEditor(E *e) {
           for (size_t i = 0; i < textLen; i++) {
             insertCharAtCursor(e, event.text.text[i]);
           }
+          render = true;
           break;
         }
         case SDL_KEYDOWN: {
