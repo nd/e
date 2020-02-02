@@ -33,14 +33,18 @@ typedef struct E_Glyph {
 
 typedef struct E {
   const char *path;
+  const char *fileName;
   char *text;
   size_t textLen;
-  char *lineBuf;
+  char lineBuf[1000];
   const char *error;
   bool quit;
   size_t cursor;
   int height;
   int width;
+  int textHeight;
+  int statusLineHeight;
+  int statusLineBaselineOffset;
 
   int lineHeight;
   int visibleLineCursor;
@@ -98,6 +102,20 @@ E init(char *path) {
   rewind(file);
   fread(text, fileSize, 1, file);
   text[fileSize] = '\0';
+
+  // file name
+  int i = strlen(path) - 1;
+  for (; i >= 0; i--) {
+    if (path[i] == '/') {
+      i++;
+      break;
+    }
+  }
+  size_t fileNameLen = strlen(path) - i;
+  char *fileName = xalloc(fileNameLen + 1);
+  strncpy(fileName, &path[i], fileNameLen);
+  fileName[fileNameLen] = '\0';
+
   fclose(file);
 
   FT_Library ftLib;
@@ -108,6 +126,7 @@ E init(char *path) {
 
   return (E) {
           .path = path,
+          .fileName = fileName,
           .height=768,
           .width=1024,
           .text = text,
@@ -120,7 +139,10 @@ E init(char *path) {
 
 void initVisibleLines(E *e) {
   e->lineHeight = e->ftFace->size->metrics.height >> 6;
-  e->visibleLineCount = floor(e->height * 1.0 / e->lineHeight);
+  e->statusLineBaselineOffset = abs(e->ftFace->size->metrics.descender >> 6);
+  e->statusLineHeight = e->lineHeight + e->statusLineBaselineOffset;
+  e->textHeight = e->height - e->statusLineHeight;
+  e->visibleLineCount = floor((e->textHeight - e->statusLineHeight) * 1.0 / e->lineHeight);
 
   E_Glyph glyph = e->glyphs['A'];
   e->columnWidth = glyph.advance;
@@ -245,9 +267,9 @@ void closeEditor(E *e) {
   if (e->text) {
     free(e->text);
   }
-  if (e->lineBuf) {
-    free(e->lineBuf);
-  }
+//  if (e->lineBuf) {
+//    free(e->lineBuf);
+//  }
   if (e->ftLib) {
     FT_Done_FreeType(e->ftLib);
   }
@@ -311,6 +333,18 @@ bool lineIterNext(LineIter *iter) {
   return true;
 }
 
+void fillCurrentLineAndOffset(E *e, int *lineIndex, int *lineStart) {
+  LineIter iter = {.text = e->text, .textLen = e->textLen};
+  int index = 0;
+  while (lineIterNext(&iter)) {
+    if (iter.lineStart <= e->cursor && e->cursor <= iter.lineStart + iter.lineLen) {
+      *lineIndex = index;
+      *lineStart = iter.lineStart;
+      break;
+    }
+    index++;
+  }
+}
 
 int getCurrentLineIndex(E *e) {
   LineIter iter = {.text = e->text, .textLen = e->textLen};
@@ -399,6 +433,8 @@ void renderText(E *e) {
   int penY = e->lineHeight;
   int lineNum = 0;
   char prev = 0;
+  int winHeight = e->textHeight;
+  int winWidth = e->width;
   while (lineIterNext(&iter)) {
     if (lineNum < firstLine) {
       lineNum++;
@@ -416,7 +452,7 @@ void renderText(E *e) {
     int lineEnd = iter.lineStart + iter.lineLen;
     int penX = 0;
     for (int i = lineStart; i < lineEnd; i++) {
-      if (penX > e->width) {
+      if (penX > winWidth) {
         break;
       }
       if (lineNum == currentLine && i == e->cursor) {
@@ -432,14 +468,14 @@ void renderText(E *e) {
       prev = c;
     }
     // space in the end of line to be able to continue it
-    if (penX < e->width) {
+    if (penX < winWidth) {
       if (lineNum == currentLine && lineEnd == e->cursor) {
         renderCursor(e, penX, penY);
       }
       renderGlyph(e, getGlyph(e, ' '), penX, penY, false);
     }
 
-    if (penY > e->height) {
+    if (penY > winHeight) {
       break;
     }
     penY += e->lineHeight;
@@ -447,17 +483,29 @@ void renderText(E *e) {
   }
 }
 
-void updateUI(E *e) {
-  Uint64 t0 = SDL_GetPerformanceCounter();
-  renderText(e);
+void renderStatusLine(E *e, Uint64 t0) {
+  SDL_SetRenderDrawColor(e->renderer, 0xdc, 0xdc, 0xdc, 0xff);
+  SDL_Rect statusLineRect = {0, e->height - e->statusLineHeight, e->width, e->statusLineHeight};
+  SDL_RenderFillRect(e->renderer, &statusLineRect);
+  SDL_SetRenderDrawColor(e->renderer, 0x0, 0x0, 0x0, 0xff);
+  SDL_RenderDrawLine(e->renderer, 0, e->height - e->statusLineHeight, e->width, e->height - e->statusLineHeight);
   Uint64 t1 = SDL_GetPerformanceCounter();
-  char rateStr[5] = {0};
   double duration = (t1 - t0) * 1.0 / e->perfCountFreqMS;
   if (duration > 1000) {
     duration = 1000;
   }
-  sprintf(rateStr, "%.1f", duration);
-  renderLine(e, rateStr, strlen(rateStr), e->width - 70, e->height - e->lineHeight);
+
+  int lineIndex = 0;
+  int lineStart = 0;
+  fillCurrentLineAndOffset(e, &lineIndex, &lineStart);
+  int count = snprintf(e->lineBuf, 1000, "  %s (%d:%d)   %.1fms", e->fileName, lineIndex+1, e->cursor - lineStart, duration);
+  renderLine(e, e->lineBuf, count, 0, e->height - e->statusLineBaselineOffset);
+}
+
+void updateUI(E *e) {
+  Uint64 t0 = SDL_GetPerformanceCounter();
+  renderText(e);
+  renderStatusLine(e, t0);
   SDL_RenderPresent(e->renderer);
 }
 
