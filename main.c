@@ -136,6 +136,10 @@ int getKerning(E *e, unsigned char left, unsigned char right) {
   return e->kerning[left * 256 + right];
 }
 
+E_Glyph *getGlyph(E *e, unsigned char c) {
+  return e->glyphs[c].initialized ? &e->glyphs[c] : &e->glyphs['?'];
+}
+
 bool initFont(E *e) {
   FT_Face face;
   FT_Error error = FT_New_Face(e->ftLib, "/home/nd/Downloads/JetBrainsMono-Regular.ttf", 0, &face);
@@ -192,6 +196,9 @@ bool initFont(E *e) {
       };
     }
   }
+  E_Glyph *tab = &e->glyphs['\t'];
+  tab->advance = e->glyphs[' '].advance * 2;
+  tab->initialized = true;
   if (FT_HAS_KERNING(face)) {
     for (int left = 0; left < 255; left++) {
       if (isprint(left)) {
@@ -341,10 +348,6 @@ void renderGlyph(E *e, E_Glyph *glyph, int penX, int penY, bool drawGlyphBox) {
     SDL_Rect dstRect = (SDL_Rect){penX + glyph->bearingX, penY - glyph->bearingY, glyph->w, glyph->h};
     SDL_RenderCopy(e->renderer, glyph->texture, 0, &dstRect);
   }
-}
-
-E_Glyph *getGlyph(E *e, unsigned char c) {
-  return e->glyphs[c].initialized ? &e->glyphs[c] : &e->glyphs['?'];
 }
 
 void renderLine(E *e, char *line, size_t size, int penX, int penY) {
