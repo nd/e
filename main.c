@@ -245,7 +245,8 @@ bool initUI(E *e) {
     setEditorError(e, SDL_GetError());
     return false;
   }
-  e->window = SDL_CreateWindow(e->path, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, e->width, e->height, SDL_WINDOW_SHOWN);
+  e->window = SDL_CreateWindow(e->path, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, e->width, e->height,
+          SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
   if (!e->window) {
     setEditorError(e, SDL_GetError());
     return false;
@@ -610,6 +611,12 @@ void moveRight(E *e) {
   }
 }
 
+void handleResize(E *e, int w, int h) {
+  e->width = w;
+  e->height = h;
+  initVisibleLines(e);
+}
+
 void runEditor(E *e) {
   updateUI(e);
   SDL_Event event;
@@ -658,6 +665,12 @@ void runEditor(E *e) {
             moveLeft(e);
           } else if (keySym == SDLK_RIGHT && e->cursor < e->textLen) {
             moveRight(e);
+          }
+          break;
+        }
+        case SDL_WINDOWEVENT: {
+          if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+            handleResize(e, event.window.data1, event.window.data2);
           }
           break;
         }
