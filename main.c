@@ -268,9 +268,6 @@ void closeEditor(E *e) {
   if (e->text) {
     free(e->text);
   }
-//  if (e->lineBuf) {
-//    free(e->lineBuf);
-//  }
   if (e->ftLib) {
     FT_Done_FreeType(e->ftLib);
   }
@@ -620,12 +617,12 @@ void handleResize(E *e, int w, int h) {
 void runEditor(E *e) {
   updateUI(e);
   SDL_Event event;
-  bool render = true;
   while (!e->quit) {
     int eventCount = 0;
     SDL_StartTextInput();
     while (SDL_PollEvent(&event)) {
       eventCount++;
+      bool render = false;
       switch (event.type) {
         case SDL_QUIT:
           e->quit = true;
@@ -659,12 +656,16 @@ void runEditor(E *e) {
             }
           } else if (keySym == SDLK_s && event.key.keysym.mod & KMOD_CTRL) {
             saveFile(e);
+            render = true;
           } else if (keySym == SDLK_DELETE) {
             deleteCharAtCursor(e);
+            render = true;
           } else if (keySym == SDLK_LEFT && e->cursor > 0) {
             moveLeft(e);
+            render = true;
           } else if (keySym == SDLK_RIGHT && e->cursor < e->textLen) {
             moveRight(e);
+            render = true;
           }
           break;
         }
@@ -672,6 +673,7 @@ void runEditor(E *e) {
           if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
             handleResize(e, event.window.data1, event.window.data2);
           }
+          render = true;
           break;
         }
       }
