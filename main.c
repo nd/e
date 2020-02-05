@@ -620,6 +620,7 @@ void runEditor(E *e) {
   while (!e->quit) {
     int eventCount = 0;
     SDL_StartTextInput();
+    bool justGainedFocus = false;
     while (SDL_PollEvent(&event)) {
       eventCount++;
       bool render = false;
@@ -639,8 +640,12 @@ void runEditor(E *e) {
           SDL_Keycode keySym = event.key.keysym.sym;
           if (keySym == SDLK_RETURN) {
             insertCharAtCursor(e, '\n');
-          } else if (keySym == SDLK_TAB) { // ignore if editor just got focus
-            // insertCharAtCursor(e, '\t');
+          } else if (keySym == SDLK_TAB) {
+            // ignore tab if it is from alt-tab when we are about to loose or have just gained focus
+            if (!(event.key.keysym.mod & KMOD_ALT) && !justGainedFocus) {
+              insertCharAtCursor(e, '\t');
+              render = true;
+            }
           } else if (event.key.keysym.mod & KMOD_CTRL) {
             switch (keySym) {
               case SDLK_s:
@@ -670,10 +675,19 @@ void runEditor(E *e) {
           break;
         }
         case SDL_WINDOWEVENT: {
-          if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-            handleResize(e, event.window.data1, event.window.data2);
+          switch (event.window.event) {
+            case SDL_WINDOWEVENT_SIZE_CHANGED:
+              handleResize(e, event.window.data1, event.window.data2);
+              render = true;
+              break;
+            case SDL_WINDOWEVENT_EXPOSED:
+              justGainedFocus = false;
+              render = true;
+              break;
+            case SDL_WINDOWEVENT_FOCUS_GAINED:
+              justGainedFocus = true;
+              break;
           }
-          render = true;
           break;
         }
       }
