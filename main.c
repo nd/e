@@ -47,14 +47,11 @@ typedef struct E {
   int statusLineBaselineOffset;
 
   int lineHeight;
-  int visibleLineCursor;
-  int visibleLineCount;
-  int visibleLineTop;
+  int visibleLineCount; // number of visible lines on the screen
+  int visibleLineCursor; // index of visible line with a cursor [0, visibleLineCount)
+  int visibleLineTop; // index of a line which is the top visible line in the editor [0, totalLinesCount)
 
-  int columnWidth;
-  int columnCursor;
-  int columnCount;
-  int columnLeft;
+  int screenLeftBorderOffsetX;
 
   SDL_Window *window;
   SDL_Renderer *renderer;
@@ -143,10 +140,6 @@ void initVisibleLines(E *e) {
   e->statusLineHeight = e->lineHeight + e->statusLineBaselineOffset;
   e->textHeight = e->height - e->statusLineHeight;
   e->visibleLineCount = floor((e->textHeight - e->statusLineHeight) * 1.0 / e->lineHeight);
-
-  E_Glyph glyph = e->glyphs['A'];
-  e->columnWidth = glyph.advance;
-  e->columnCount = floor(e->width * 1.0 / e->columnWidth);
 }
 
 
@@ -219,7 +212,7 @@ bool initFont(E *e) {
     }
   }
   E_Glyph *tab = &e->glyphs['\t'];
-  tab->advance = e->glyphs[' '].advance * 2;
+  tab->advance = e->glyphs[' '].advance * 4;
   tab->initialized = true;
   if (FT_HAS_KERNING(face)) {
     for (int left = 0; left < 255; left++) {
@@ -439,30 +432,37 @@ void renderText(E *e) {
       continue;
     }
 
-    int lineLen = iter.lineLen;
-    if (lineLen < e->columnLeft) {
-      penY += e->lineHeight;
-      lineNum++;
-      continue;
-    }
-
-    int lineStart = iter.lineStart + e->columnLeft;
     int lineEnd = iter.lineStart + iter.lineLen;
-    int penX = 0;
-    for (int i = lineStart; i < lineEnd; i++) {
+    int prevGlyphRightBorder = 0; // includes invisible glyphs to the left of screen left border
+    int penX = 0; // x offset where we put a char on a screen, can be negative for partially shown glyphs with start to the left of left screen border
+    bool firstVisibleGlyph = true; // whether we reached first visible glyph on the line
+    for (int i = iter.lineStart; i < lineEnd; i++) {
       if (penX > winWidth) {
         break;
+      }
+      char c = e->text[i];
+      E_Glyph *glyph = getGlyph(e, c);
+      int kerning = prev ? getKerning(e, prev, c) : 0;
+      int glyphLeftBorder = prevGlyphRightBorder + kerning;
+      int glyphRightBorder = glyphLeftBorder + glyph->advance;
+      if (glyphRightBorder < e->screenLeftBorderOffsetX) {
+        // whole glyph is before left screen border
+        prevGlyphRightBorder = glyphRightBorder;
+        prev = c;
+        continue;
+      }
+      if (firstVisibleGlyph) {
+        penX = glyphLeftBorder - e->screenLeftBorderOffsetX;
+        firstVisibleGlyph = false;
+      } else {
+        penX = penX + kerning;
       }
       if (lineNum == currentLine && i == e->cursor) {
         renderCursor(e, penX, penY);
       }
-      char c = e->text[i];
-      E_Glyph *glyph = getGlyph(e, c);
       renderGlyph(e, glyph, penX, penY, false);
       penX += glyph->advance;
-      if (prev) {
-        penX += getKerning(e, prev, c);
-      }
+      prevGlyphRightBorder = glyphRightBorder;
       prev = c;
     }
     // space in the end of line to be able to continue it
@@ -525,7 +525,6 @@ void insertCharAtCursor(E *e, char c) {
     } else {
       e->visibleLineTop++;
     }
-    e->columnLeft = 0;
   }
 }
 
@@ -563,25 +562,71 @@ void saveFile(E *e) {
   }
 }
 
+void incVisibleLine(E *e) {
+  if (e->visibleLineCursor < e->visibleLineCount - 1) {
+    e->visibleLineCursor++;
+  } else {
+    bool hasMoreLines = false;
+    for (size_t i = e->cursor; i < e->textLen; i++) {
+      if (e->text[i] == '\n') {
+        hasMoreLines = true;
+        break;
+      }
+    }
+    if (hasMoreLines) {
+      e->visibleLineTop++;
+    }
+  }
+}
+
+void decVisibleLine(E *e) {
+  if (e->visibleLineCursor > 0) {
+    e->visibleLineCursor--;
+  } else if (e->visibleLineTop > 0) {
+    e->visibleLineTop--;
+  }
+}
+
+int getCursorOffsetX(E *e) {
+  size_t cursor = e->cursor;
+  if (cursor == 0) {
+    return 0;
+  }
+  size_t i = cursor - 1;
+  for (; i > 0; i--) {
+    if (e->text[i] == '\n') { // prev line end
+      i++;
+      break;
+    }
+  }
+  int result = 0;
+  char prev = 0;
+  for (; i <= cursor; i++) {
+    char c = e->text[i];
+    result += (prev ? getKerning(e, prev, c) : 0);
+    if (i < cursor) {
+      result += getGlyph(e, c)->advance;
+    }
+    prev = c;
+  }
+  return result;
+}
+
 void moveLeft(E *e) {
   if (e->cursor > 0) {
     e->cursor--;
+    int cursorOffsetX = getCursorOffsetX(e);
     if (e->text[e->cursor] == '\n') {
-      if (e->visibleLineCursor > 0) {
-        e->visibleLineCursor--;
-      } else if (e->visibleLineTop > 0) {
-        e->visibleLineTop--;
+      decVisibleLine(e);
+      int nextCharOffset = cursorOffsetX + getGlyph(e, ' ')->advance;
+      if (e->width < nextCharOffset) {
+        e->screenLeftBorderOffsetX = nextCharOffset - e->width;
+      } else {
+        e->screenLeftBorderOffsetX = 0;
       }
-      int cursorOffset = getCursorOffsetInLine(e);
-      if (cursorOffset >= e->columnCount) {
-        e->columnLeft = cursorOffset - e->columnCount;
-      }
-      e->columnCursor = MIN(e->columnCount, cursorOffset);
     } else {
-      if (e->columnCursor > 0) {
-        e->columnCursor--;
-      } else if (e->columnLeft > 0) {
-        e->columnLeft--;
+      if (e->screenLeftBorderOffsetX > cursorOffsetX) {
+        e->screenLeftBorderOffsetX = cursorOffsetX;
       }
     }
   }
@@ -589,22 +634,61 @@ void moveLeft(E *e) {
 
 void moveRight(E *e) {
   if (e->cursor < e->textLen) {
-    if (e->text[e->cursor] == '\n') {
-      if (e->visibleLineCursor < e->visibleLineCount - 1) {
-        e->visibleLineCursor++;
-      } else {
-        e->visibleLineTop++;
-      }
-      e->columnCursor = 0;
-      e->columnLeft = 0;
+    char c = e->text[e->cursor];
+    if (c == '\n') {
+      incVisibleLine(e);
+      e->screenLeftBorderOffsetX = 0;
+      e->cursor++;
     } else {
-      if (e->columnCursor < e->columnCount - 1) {
-        e->columnCursor++;
-      } else {
-        e->columnLeft++;
+      e->cursor++;
+      int cursorOffsetX = getCursorOffsetX(e);
+      int nextCharOffset = cursorOffsetX + getKerning(e, c, e->text[e->cursor]) + getGlyph(e, e->text[e->cursor])->advance;
+      if (e->width < nextCharOffset) {
+        e->screenLeftBorderOffsetX = nextCharOffset - e->width;
       }
     }
-    e->cursor++;
+  }
+}
+
+void moveLineUp(E *e) {
+  int i = e->cursor;
+  if (e->text[i] == '\n' && i > 0) {
+    i--;
+  }
+  for (; i > 0; i--) {
+    if (e->text[i] == '\n') {
+      break;
+    }
+  }
+  e->cursor = i;
+  decVisibleLine(e);
+
+  int cursorOffsetX = getCursorOffsetX(e);
+  int nextCharOffset = cursorOffsetX + getGlyph(e, ' ')->advance;
+  if (e->width < nextCharOffset) {
+    e->screenLeftBorderOffsetX = nextCharOffset - e->width;
+  } else {
+    e->screenLeftBorderOffsetX = 0;
+  }
+}
+
+void moveLineDown(E *e) {
+  int i = e->cursor;
+  for (; i < e->textLen; i++) {
+    if (e->text[i] == '\n') {
+      i++;
+      break;
+    }
+  }
+  e->cursor = i;
+  incVisibleLine(e);
+
+  int cursorOffsetX = getCursorOffsetX(e);
+  int nextCharOffset = cursorOffsetX/* + getGlyph(e, ' ')->advance*/;
+  if (e->width < nextCharOffset) {
+    e->screenLeftBorderOffsetX = nextCharOffset - e->width;
+  } else {
+    e->screenLeftBorderOffsetX = 0;
   }
 }
 
@@ -670,6 +754,12 @@ void runEditor(E *e) {
             render = true;
           } else if (keySym == SDLK_RIGHT && e->cursor < e->textLen) {
             moveRight(e);
+            render = true;
+          } else if (keySym == SDLK_DOWN) {
+            moveLineDown(e);
+            render = true;
+          } else if (keySym == SDLK_UP) {
+            moveLineUp(e);
             render = true;
           }
           break;
