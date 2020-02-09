@@ -652,27 +652,68 @@ void moveRight(E *e) {
 }
 
 void moveLineUp(E *e) {
+  int currentLineCursorOffsetX = getCursorOffsetX(e);
   int i = e->cursor;
   if (e->text[i] == '\n' && i > 0) {
     i--;
   }
+  int prevLineEnd = 0;
   for (; i > 0; i--) {
     if (e->text[i] == '\n') {
+      prevLineEnd = i;
       break;
     }
   }
+  int prevLineStart = 0;
+  if (prevLineEnd > 0) {
+    for (i = prevLineEnd - 1; i > 0; i--) {
+      if (e->text[i] == '\n') {
+        prevLineStart = i + 1;
+        break;
+      }
+    }
+  }
+  int offset = 0;
+  char prev = 0;
+  for (i = prevLineStart; i < prevLineEnd; i++) {
+    char c = e->text[i];
+    int next = offset + (prev ? getKerning(e, prev, c) : 0) + getGlyph(e, c)->advance;
+    if (next > currentLineCursorOffsetX) {
+      break;
+    } else {
+      offset = next;
+    }
+    prev = c;
+  }
+
   e->cursor = i;
   decVisibleLine(e);
   updateScreenLeftBorderOffsetX(e);
 }
 
 void moveLineDown(E *e) {
+  int currentLineCursorOffsetX = getCursorOffsetX(e);
   int i = e->cursor;
   for (; i < e->textLen; i++) {
     if (e->text[i] == '\n') {
       i++;
       break;
     }
+  }
+  int offset = 0;
+  char prev = 0;
+  for (; i < e->textLen; i++) {
+    char c = e->text[i];
+    if (c == '\n') {
+      break;
+    }
+    int next = offset + (prev ? getKerning(e, prev, c) : 0) + getGlyph(e, c)->advance;
+    if (next > currentLineCursorOffsetX) {
+      break;
+    } else {
+      offset = next;
+    }
+    prev = c;
   }
   e->cursor = i;
   incVisibleLine(e);
