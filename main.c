@@ -53,6 +53,10 @@ typedef struct E {
 
   int screenLeftBorderOffsetX;
 
+  // when moving up/down try to reach this cursor offset on prev/next line
+  // it is reset during horizontal movements, 0 means not set
+  int desiredCursorOffsetX;
+
   SDL_Window *window;
   SDL_Renderer *renderer;
 
@@ -637,6 +641,7 @@ void moveLeft(E *e) {
       decVisibleLine(e);
     }
     updateScreenLeftBorderOffsetX(e);
+    e->desiredCursorOffsetX = 0;
   }
 }
 
@@ -648,11 +653,16 @@ void moveRight(E *e) {
     }
     e->cursor++;
     updateScreenLeftBorderOffsetX(e);
+    e->desiredCursorOffsetX = 0;
   }
 }
 
 void moveLineUp(E *e) {
-  int currentLineCursorOffsetX = getCursorOffsetX(e);
+  int desiredCursorOffsetX = e->desiredCursorOffsetX;
+  if (!desiredCursorOffsetX) {
+    desiredCursorOffsetX = getCursorOffsetX(e);
+    e->desiredCursorOffsetX = desiredCursorOffsetX;
+  }
   int i = e->cursor;
   if (e->text[i] == '\n' && i > 0) {
     i--;
@@ -678,7 +688,7 @@ void moveLineUp(E *e) {
   for (i = prevLineStart; i < prevLineEnd; i++) {
     char c = e->text[i];
     int next = offset + (prev ? getKerning(e, prev, c) : 0) + getGlyph(e, c)->advance;
-    if (next > currentLineCursorOffsetX) {
+    if (next > desiredCursorOffsetX) {
       break;
     } else {
       offset = next;
@@ -692,7 +702,11 @@ void moveLineUp(E *e) {
 }
 
 void moveLineDown(E *e) {
-  int currentLineCursorOffsetX = getCursorOffsetX(e);
+  int desiredCursorOffsetX = e->desiredCursorOffsetX;
+  if (!desiredCursorOffsetX) {
+    desiredCursorOffsetX = getCursorOffsetX(e);
+    e->desiredCursorOffsetX = desiredCursorOffsetX;
+  }
   int i = e->cursor;
   for (; i < e->textLen; i++) {
     if (e->text[i] == '\n') {
@@ -708,7 +722,7 @@ void moveLineDown(E *e) {
       break;
     }
     int next = offset + (prev ? getKerning(e, prev, c) : 0) + getGlyph(e, c)->advance;
-    if (next > currentLineCursorOffsetX) {
+    if (next > desiredCursorOffsetX) {
       break;
     } else {
       offset = next;
