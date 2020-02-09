@@ -612,23 +612,31 @@ int getCursorOffsetX(E *e) {
   return result;
 }
 
+void updateScreenLeftBorderOffsetX(E *e) {
+  char c = e->text[e->cursor];
+  char nextC = e->cursor < e->textLen - 1 ? e->text[e->cursor + 1] : 0;
+  int cursorOffsetX = getCursorOffsetX(e);
+  int nextCharOffset = cursorOffsetX;
+  if (c == '\n') {
+    nextCharOffset += getGlyph(e, ' ')->advance;
+  } else {
+    int kerning = nextC ? getKerning(e, e->text[e->cursor], nextC) : 0;
+    nextCharOffset += getGlyph(e, c)->advance + kerning;
+  }
+  if ((nextCharOffset - e->screenLeftBorderOffsetX) > e->width) {
+    e->screenLeftBorderOffsetX = nextCharOffset - e->width;
+  } else if (cursorOffsetX < e->screenLeftBorderOffsetX) {
+    e->screenLeftBorderOffsetX = cursorOffsetX;
+  }
+}
+
 void moveLeft(E *e) {
   if (e->cursor > 0) {
     e->cursor--;
-    int cursorOffsetX = getCursorOffsetX(e);
     if (e->text[e->cursor] == '\n') {
       decVisibleLine(e);
-      int nextCharOffset = cursorOffsetX + getGlyph(e, ' ')->advance;
-      if (e->width < nextCharOffset) {
-        e->screenLeftBorderOffsetX = nextCharOffset - e->width;
-      } else {
-        e->screenLeftBorderOffsetX = 0;
-      }
-    } else {
-      if (e->screenLeftBorderOffsetX > cursorOffsetX) {
-        e->screenLeftBorderOffsetX = cursorOffsetX;
-      }
     }
+    updateScreenLeftBorderOffsetX(e);
   }
 }
 
@@ -637,16 +645,9 @@ void moveRight(E *e) {
     char c = e->text[e->cursor];
     if (c == '\n') {
       incVisibleLine(e);
-      e->screenLeftBorderOffsetX = 0;
-      e->cursor++;
-    } else {
-      e->cursor++;
-      int cursorOffsetX = getCursorOffsetX(e);
-      int nextCharOffset = cursorOffsetX + getKerning(e, c, e->text[e->cursor]) + getGlyph(e, e->text[e->cursor])->advance;
-      if (e->width < nextCharOffset) {
-        e->screenLeftBorderOffsetX = nextCharOffset - e->width;
-      }
     }
+    e->cursor++;
+    updateScreenLeftBorderOffsetX(e);
   }
 }
 
@@ -662,14 +663,7 @@ void moveLineUp(E *e) {
   }
   e->cursor = i;
   decVisibleLine(e);
-
-  int cursorOffsetX = getCursorOffsetX(e);
-  int nextCharOffset = cursorOffsetX + getGlyph(e, ' ')->advance;
-  if (e->width < nextCharOffset) {
-    e->screenLeftBorderOffsetX = nextCharOffset - e->width;
-  } else {
-    e->screenLeftBorderOffsetX = 0;
-  }
+  updateScreenLeftBorderOffsetX(e);
 }
 
 void moveLineDown(E *e) {
@@ -682,14 +676,7 @@ void moveLineDown(E *e) {
   }
   e->cursor = i;
   incVisibleLine(e);
-
-  int cursorOffsetX = getCursorOffsetX(e);
-  int nextCharOffset = cursorOffsetX/* + getGlyph(e, ' ')->advance*/;
-  if (e->width < nextCharOffset) {
-    e->screenLeftBorderOffsetX = nextCharOffset - e->width;
-  } else {
-    e->screenLeftBorderOffsetX = 0;
-  }
+  updateScreenLeftBorderOffsetX(e);
 }
 
 void handleResize(E *e, int w, int h) {
