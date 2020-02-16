@@ -9,7 +9,8 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 
-#define MIN(a, b) (a < b) ? (a) : (b)
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
 
 int die(char *msg) {
   if (errno) {
@@ -20,6 +21,70 @@ int die(char *msg) {
   exit(EXIT_FAILURE);
 }
 
+void *xalloc(size_t size) {
+  void *result = malloc(size);
+  if (!result) {
+    die("Alloc failed");
+  }
+  return result;
+}
+
+void *xrealloc(void *ptr, size_t size) {
+  void *result = realloc(ptr, size);
+  if (!result) {
+    die("Realloc failed");
+  }
+  return result;
+}
+
+void *xcalloc(size_t num_elems, size_t elem_size) {
+  void *result = calloc(num_elems, elem_size);
+  if (!result) {
+    die("xcalloc failed");
+  }
+  return result;
+}
+
+typedef struct BufHdr {
+  size_t len;
+  size_t cap;
+  char buf[1];
+} BufHdr;
+#define buf_hdr(b) ((BufHdr *)(((char *) (b)) - offsetof(BufHdr, buf)))
+#define buf_len(b) ((b) ? buf_hdr(b)->len : 0)
+#define buf_cap(b) ((b) ? buf_hdr(b)->cap : 0)
+#define buf_free(b) ((b) ? (free(buf_hdr(b)), b = 0) : 0)
+#define buf_push(b, x) (b = buf_grow(b, buf_len(b) + 1, sizeof(*(b))), b[buf_hdr(b)->len++] = (x))
+void *buf_grow(void *buf, size_t new_len, size_t elem_size) {
+  if (buf_cap(buf) > new_len) {
+    return buf;
+  }
+  size_t new_cap = MAX(buf_cap(buf) * 2, MAX(new_len, 16));
+  size_t new_size = offsetof(BufHdr, buf) + new_cap * elem_size;
+  BufHdr *hdr = 0;
+  if (buf) {
+    hdr = xrealloc(buf_hdr(buf), new_size);
+  } else {
+    hdr = xalloc(new_size);
+    hdr->len = 0;
+  }
+  hdr->cap = new_cap;
+  return hdr->buf;
+}
+
+struct E;
+
+typedef void E_ActionHandler(struct E *e);
+
+typedef struct E_Key {
+  SDL_Keycode sym;
+  Uint16 mod;
+  bool hasMoreKeys;
+  union {
+    E_ActionHandler *handler;
+    struct E_Key *keys;
+  };
+} E_Key;
 
 typedef struct E_Glyph {
   SDL_Texture *texture;
@@ -66,6 +131,9 @@ typedef struct E {
   FT_Pos kerning[256 * 256];
 
   Uint64 perfCountFreqMS;
+
+  E_Key *rootKeys;
+  E_Key *curKeys;
 } E;
 
 
@@ -73,22 +141,12 @@ void setEditorError(E *e, const char *error) {
   e->error = error;
 }
 
-void *xalloc(size_t size) {
-  void *result = malloc(size);
-  if (!result) {
-    die("Alloc failed");
-  }
-  return result;
-}
-
-void *xrealloc(void *ptr, size_t size) {
-  void *result = realloc(ptr, size);
-  if (!result) {
-    die("Realloc failed");
-  }
-  return result;
-}
-
+void moveLeft(E *e);
+void moveRight(E *e);
+void moveLineUp(E *e);
+void moveLineDown(E *e);
+void saveFile(E *e);
+void deleteCharAtCursor(E *e);
 
 E init(char *path) {
   FILE *file = fopen(path, "r+b");
@@ -125,6 +183,22 @@ E init(char *path) {
     die("Failed to init ft");
   }
 
+  E_Key *keys = {0};
+  buf_push(keys, ((E_Key){.sym = SDLK_LEFT, .handler = moveLeft}));
+  buf_push(keys, ((E_Key){.sym = SDLK_b, .mod = KMOD_CTRL, .handler = moveLeft}));
+  buf_push(keys, ((E_Key){.sym = SDLK_RIGHT, .handler = moveRight}));
+  buf_push(keys, ((E_Key){.sym = SDLK_f, .mod = KMOD_CTRL, .handler = moveRight}));
+  buf_push(keys, ((E_Key){.sym = SDLK_UP, .handler = moveLineUp}));
+  buf_push(keys, ((E_Key){.sym = SDLK_p, .mod = KMOD_CTRL, .handler = moveLineUp}));
+  buf_push(keys, ((E_Key){.sym = SDLK_DOWN, .handler = moveLineDown}));
+  buf_push(keys, ((E_Key){.sym = SDLK_n, .mod = KMOD_CTRL, .handler = moveLineDown}));
+  buf_push(keys, ((E_Key){.sym = SDLK_DELETE, .handler = deleteCharAtCursor}));
+  buf_push(keys, ((E_Key){.sym = SDLK_d, .mod = KMOD_CTRL, .handler = deleteCharAtCursor}));
+
+  E_Key *ctrlX = {0};
+  buf_push(ctrlX, ((E_Key){.sym = SDLK_s, .mod = KMOD_CTRL, .handler = saveFile}));
+  buf_push(keys, ((E_Key){.sym = SDLK_x, .mod = KMOD_CTRL, .hasMoreKeys = true, .keys = ctrlX}));
+
   return (E) {
           .path = path,
           .fileName = fileName,
@@ -134,6 +208,8 @@ E init(char *path) {
           .textLen = strlen(text),
           .ftLib = ftLib,
           .perfCountFreqMS = SDL_GetPerformanceFrequency() / 1000,
+          .rootKeys = keys,
+          .curKeys = keys,
   };
 }
 
@@ -740,6 +816,24 @@ void handleResize(E *e, int w, int h) {
   initVisibleLines(e);
 }
 
+bool handleKey(E *e, SDL_Keysym key) {
+  size_t keysLen = buf_len(e->curKeys);
+  for (size_t i = 0; i < keysLen; i++) {
+    E_Key k = e->curKeys[i];
+    if (k.sym == key.sym && (k.mod == key.mod || k.mod & key.mod)) {
+      if (k.hasMoreKeys) {
+        e->curKeys = k.keys;
+      } else {
+        e->curKeys = e->rootKeys;
+        k.handler(e);
+      }
+      return true;
+    }
+  }
+  e->curKeys = e->rootKeys;
+  return false;
+}
+
 void runEditor(E *e) {
   updateUI(e);
   SDL_Event event;
@@ -764,7 +858,9 @@ void runEditor(E *e) {
         }
         case SDL_KEYDOWN: {
           SDL_Keycode keySym = event.key.keysym.sym;
-          if (keySym == SDLK_RETURN) {
+          if (handleKey(e, event.key.keysym)) {
+            render = true;
+          } else if (keySym == SDLK_RETURN) {
             insertCharAtCursor(e, '\n');
           } else if (keySym == SDLK_TAB) {
             // ignore tab if it is from alt-tab when we are about to loose or have just gained focus
@@ -774,9 +870,6 @@ void runEditor(E *e) {
             }
           } else if (event.key.keysym.mod & KMOD_CTRL) {
             switch (keySym) {
-              case SDLK_s:
-                saveFile(e);
-                break;
               case SDLK_r:
                 render = false;
                 debugRender(e);
@@ -785,24 +878,6 @@ void runEditor(E *e) {
                 render = true;
                 break;
             }
-          } else if (keySym == SDLK_s && event.key.keysym.mod & KMOD_CTRL) {
-            saveFile(e);
-            render = true;
-          } else if (keySym == SDLK_DELETE) {
-            deleteCharAtCursor(e);
-            render = true;
-          } else if (keySym == SDLK_LEFT && e->cursor > 0) {
-            moveLeft(e);
-            render = true;
-          } else if (keySym == SDLK_RIGHT && e->cursor < e->textLen) {
-            moveRight(e);
-            render = true;
-          } else if (keySym == SDLK_DOWN) {
-            moveLineDown(e);
-            render = true;
-          } else if (keySym == SDLK_UP) {
-            moveLineUp(e);
-            render = true;
           }
           break;
         }
