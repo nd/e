@@ -71,6 +71,17 @@ void *buf_grow(void *buf, size_t new_len, size_t elem_size) {
   hdr->cap = new_cap;
   return hdr->buf;
 }
+void buf_set_len(void *buf, size_t new_len) {
+  if (buf) {
+    BufHdr *hdr = buf_hdr(buf);
+    hdr->len = new_len;
+  }
+}
+
+typedef struct Gap {
+  size_t offset;
+  char *buf; // stretchy buf
+} Gap;
 
 struct E;
 
@@ -134,6 +145,8 @@ typedef struct E {
 
   E_Key *rootKeys;
   E_Key *curKeys;
+
+  Gap gap;
 } E;
 
 
@@ -210,6 +223,7 @@ E init(char *path) {
           .perfCountFreqMS = SDL_GetPerformanceFrequency() / 1000,
           .rootKeys = keys,
           .curKeys = keys,
+          .gap = {0},
   };
 }
 
@@ -353,12 +367,43 @@ void closeEditor(E *e) {
   SDL_Quit();
 }
 
+size_t E_getTextLen(E *e) {
+  return e->textLen + buf_len(e->gap.buf);
+}
+
+char E_getChar(E *e, size_t offset) {
+  if (offset < e->gap.offset) {
+    return e->text[offset];
+  }
+  size_t offsetFromGapStart = offset - e->gap.offset;
+  size_t gapLen = buf_len(e->gap.buf);
+  if (offsetFromGapStart < gapLen) {
+    return e->gap.buf[offsetFromGapStart];
+  }
+  return e->text[offset - gapLen];
+}
+
+void flushGap(E *e) {
+  size_t gapLen = buf_len(e->gap.buf);
+  if (gapLen) {
+    size_t newTextLen = E_getTextLen(e);
+    char *newText = xalloc(newTextLen + 1);
+    strncpy(newText, e->text, e->gap.offset);
+    strncpy(&newText[e->gap.offset], e->gap.buf, gapLen);
+    strncpy(&newText[e->gap.offset + gapLen], &e->text[e->gap.offset], e->textLen - e->gap.offset);
+    newText[newTextLen] = '\0';
+    free(e->text);
+    e->text = newText;
+    e->textLen = newTextLen;
+    buf_set_len(e->gap.buf, 0);
+  }
+}
 
 int getCursorOffsetInLine(E *e) {
   int result = 0;
   if (e->cursor > 0) {
     for (size_t i = e->cursor - 1; i <= e->cursor; i--) {
-      if (e->text[i] == '\n') {
+      if (E_getChar(e, i) == '\n') {
         break;
       }
       result++;
@@ -367,35 +412,29 @@ int getCursorOffsetInLine(E *e) {
   return result;
 }
 
-
 typedef struct LineIter {
-  char *text;
-  int textLen;
+  E *e;
   int lineStart;
   int lineLen;
-  bool calledBefore;
-  bool terminated;
 } LineIter;
 
+LineIter createIter(E *e) {
+  return (LineIter){.e = e, .lineStart = -1};
+}
 
 bool lineIterNext(LineIter *iter) {
-  if (!iter->text) {
+  if (!iter->e) {
     return false;
   }
-  if (iter->terminated) {
-    return false;
-  }
-  int start = iter->calledBefore ? iter->lineStart + iter->lineLen + 1 : 0;
-  iter->calledBefore = true;
-  iter->lineStart = start;
+  iter->lineStart = iter->lineStart + iter->lineLen + 1;
   int len = 0;
   for (int i = iter->lineStart; ; i++) {
-    char c = iter->text[i];
+    char c = E_getChar(iter->e, i);
     if (c == '\n') {
       break;
     }
     if (c == '\0') {
-      iter->terminated = true;
+      iter->e = 0;
       break;
     }
     len++;
@@ -405,7 +444,7 @@ bool lineIterNext(LineIter *iter) {
 }
 
 void fillCurrentLineAndOffset(E *e, int *lineIndex, int *lineStart) {
-  LineIter iter = {.text = e->text, .textLen = e->textLen};
+  LineIter iter = createIter(e);
   int index = 0;
   while (lineIterNext(&iter)) {
     if (iter.lineStart <= e->cursor && e->cursor <= iter.lineStart + iter.lineLen) {
@@ -418,7 +457,7 @@ void fillCurrentLineAndOffset(E *e, int *lineIndex, int *lineStart) {
 }
 
 int getCurrentLineIndex(E *e) {
-  LineIter iter = {.text = e->text, .textLen = e->textLen};
+  LineIter iter = createIter(e);
   int result = 0;
   while (lineIterNext(&iter)) {
     if (iter.lineStart <= e->cursor && e->cursor <= iter.lineStart + iter.lineLen) {
@@ -500,7 +539,7 @@ void renderText(E *e) {
   SDL_RenderClear(e->renderer);
   int currentLine = getCurrentLineIndex(e);
   int firstLine = e->visibleLineTop;
-  LineIter iter = (LineIter){.text = e->text, .textLen = e->textLen};
+  LineIter iter = createIter(e);
   int penY = e->lineHeight;
   int lineNum = 0;
   char prev = 0;
@@ -520,7 +559,7 @@ void renderText(E *e) {
       if (penX > winWidth) {
         break;
       }
-      char c = e->text[i];
+      char c = E_getChar(e, i);
       E_Glyph *glyph = getGlyph(e, c);
       int kerning = prev ? getKerning(e, prev, c) : 0;
       int glyphLeftBorder = prevGlyphRightBorder + kerning;
@@ -588,16 +627,13 @@ void updateUI(E *e) {
 }
 
 void insertCharAtCursor(E *e, char c) {
-  assert(0 <= e->cursor && e->cursor <= e->textLen);
-  size_t newTextLen = e->textLen + 1;
-  char *newText = xalloc(newTextLen + 1);
-  strncpy(newText, e->text, e->cursor);
-  newText[e->cursor] = c;
-  strncpy(&newText[e->cursor + 1], &e->text[e->cursor], e->textLen - e->cursor);
-  newText[newTextLen] = '\0';
-  free(e->text);
-  e->text = newText;
-  e->textLen = newTextLen;
+  assert(0 <= e->cursor && e->cursor <= E_getTextLen(e));
+  if (e->gap.offset + buf_len(e->gap.buf) != e->cursor) {
+    flushGap(e);
+    e->gap.offset = e->cursor;
+  }
+  buf_push(e->gap.buf, c);
+
   e->cursor++;
   if (c == '\n') {
     if (e->visibleLineCursor < e->visibleLineCount - 1) {
@@ -609,25 +645,33 @@ void insertCharAtCursor(E *e, char c) {
 }
 
 void deleteCharAtCursor(E *e) {
-  assert(0 <= e->cursor && e->cursor <= e->textLen);
-  if (e->cursor == e->textLen) {
+  assert(0 <= e->cursor && e->cursor <= E_getTextLen(e));
+  if (e->cursor == E_getTextLen(e)) {
     // cursor is at '\0' terminating the text, deleting it is noop
     return;
   }
-  size_t newTextLen = e->textLen - 1;
-  char *newText = xalloc(newTextLen + 1);
-  strncpy(newText, e->text, e->cursor);
-  size_t afterCursor = e->cursor + 1;
-  if (afterCursor < e->textLen) {
-    strncpy(&newText[e->cursor], &e->text[afterCursor], e->textLen - afterCursor);
+  if (e->gap.offset <= e->cursor && e->cursor < e->gap.offset + buf_len(e->gap.buf)) {
+    // delete inside a gap
+    size_t i = e->cursor - e->gap.offset;
+    for (; i < buf_len(e->gap.buf) - 1; i++) {
+      e->gap.buf[i] = e->gap.buf[i + 1];
+    }
+    buf_set_len(e->gap.buf, buf_len(e->gap.buf) - 1);
+  } else {
+    flushGap(e);
+    size_t newTextLen = E_getTextLen(e) - 1;
+    char *newText = xalloc(newTextLen + 1);
+    strncpy(newText, e->text, e->cursor);
+    size_t afterCursor = e->cursor + 1;
+    if (afterCursor < e->textLen) {
+      strncpy(&newText[e->cursor], &e->text[afterCursor], e->textLen - afterCursor);
+    }
+    newText[newTextLen] = '\0';
+    free(e->text);
+    e->text = newText;
+    e->textLen = newTextLen;
   }
-  newText[newTextLen] = '\0';
-  free(e->text);
-  e->text = newText;
-  e->textLen = newTextLen;
-  if (e->cursor > e->textLen) {
-    e->cursor = e->textLen;
-  }
+  e->cursor = MIN(e->cursor, E_getTextLen(e));
 }
 
 void saveFile(E *e) {
@@ -635,9 +679,10 @@ void saveFile(E *e) {
   if (!file) {
     die("Open file failed");
   }
-  size_t written = fwrite(e->text, 1, e->textLen, file);
+  flushGap(e);
+  size_t written = fwrite(e->text, 1, E_getTextLen(e), file);
   fclose(file);
-  if (written != e->textLen) {
+  if (written != E_getTextLen(e)) {
     die("Write failed");
   }
 }
@@ -647,8 +692,8 @@ void incVisibleLine(E *e) {
     e->visibleLineCursor++;
   } else {
     bool hasMoreLines = false;
-    for (size_t i = e->cursor; i < e->textLen; i++) {
-      if (e->text[i] == '\n') {
+    for (size_t i = e->cursor; i < E_getTextLen(e); i++) {
+      if (E_getChar(e, i) == '\n') {
         hasMoreLines = true;
         break;
       }
@@ -674,7 +719,7 @@ int getCursorOffsetX(E *e) {
   }
   size_t i = cursor - 1;
   for (; i > 0; i--) {
-    if (e->text[i] == '\n') { // prev line end
+    if (E_getChar(e, i) == '\n') { // prev line end
       i++;
       break;
     }
@@ -682,7 +727,7 @@ int getCursorOffsetX(E *e) {
   int result = 0;
   char prev = 0;
   for (; i <= cursor; i++) {
-    char c = e->text[i];
+    char c = E_getChar(e, i);
     result += (prev ? getKerning(e, prev, c) : 0);
     if (i < cursor) {
       result += getGlyph(e, c)->advance;
@@ -693,14 +738,14 @@ int getCursorOffsetX(E *e) {
 }
 
 void updateScreenLeftBorderOffsetX(E *e) {
-  char c = e->text[e->cursor];
-  char nextC = e->cursor < e->textLen - 1 ? e->text[e->cursor + 1] : 0;
+  char c = E_getChar(e, e->cursor);
+  char nextC = e->cursor < E_getTextLen(e) - 1 ? E_getChar(e, e->cursor + 1) : 0;
   int cursorOffsetX = getCursorOffsetX(e);
   int nextCharOffset = cursorOffsetX;
   if (c == '\n') {
     nextCharOffset += getGlyph(e, ' ')->advance;
   } else {
-    int kerning = nextC ? getKerning(e, e->text[e->cursor], nextC) : 0;
+    int kerning = nextC ? getKerning(e, E_getChar(e, e->cursor), nextC) : 0;
     nextCharOffset += getGlyph(e, c)->advance + kerning;
   }
   if ((nextCharOffset - e->screenLeftBorderOffsetX) > e->width) {
@@ -713,7 +758,7 @@ void updateScreenLeftBorderOffsetX(E *e) {
 void moveLeft(E *e) {
   if (e->cursor > 0) {
     e->cursor--;
-    if (e->text[e->cursor] == '\n') {
+    if (E_getChar(e, e->cursor) == '\n') {
       decVisibleLine(e);
     }
     updateScreenLeftBorderOffsetX(e);
@@ -722,8 +767,8 @@ void moveLeft(E *e) {
 }
 
 void moveRight(E *e) {
-  if (e->cursor < e->textLen) {
-    char c = e->text[e->cursor];
+  if (e->cursor < E_getTextLen(e)) {
+    char c = E_getChar(e, e->cursor);
     if (c == '\n') {
       incVisibleLine(e);
     }
@@ -740,12 +785,12 @@ void moveLineUp(E *e) {
     e->desiredCursorOffsetX = desiredCursorOffsetX;
   }
   int i = e->cursor;
-  if (e->text[i] == '\n' && i > 0) {
+  if (E_getChar(e, i) == '\n' && i > 0) {
     i--;
   }
   int prevLineEnd = 0;
   for (; i > 0; i--) {
-    if (e->text[i] == '\n') {
+    if (E_getChar(e, i) == '\n') {
       prevLineEnd = i;
       break;
     }
@@ -753,7 +798,7 @@ void moveLineUp(E *e) {
   int prevLineStart = 0;
   if (prevLineEnd > 0) {
     for (i = prevLineEnd - 1; i > 0; i--) {
-      if (e->text[i] == '\n') {
+      if (E_getChar(e, i) == '\n') {
         prevLineStart = i + 1;
         break;
       }
@@ -762,7 +807,7 @@ void moveLineUp(E *e) {
   int offset = 0;
   char prev = 0;
   for (i = prevLineStart; i < prevLineEnd; i++) {
-    char c = e->text[i];
+    char c = E_getChar(e, i);
     int next = offset + (prev ? getKerning(e, prev, c) : 0) + getGlyph(e, c)->advance;
     if (next > desiredCursorOffsetX) {
       break;
@@ -784,16 +829,16 @@ void moveLineDown(E *e) {
     e->desiredCursorOffsetX = desiredCursorOffsetX;
   }
   int i = e->cursor;
-  for (; i < e->textLen; i++) {
-    if (e->text[i] == '\n') {
+  for (; i < E_getTextLen(e); i++) {
+    if (E_getChar(e, i) == '\n') {
       i++;
       break;
     }
   }
   int offset = 0;
   char prev = 0;
-  for (; i < e->textLen; i++) {
-    char c = e->text[i];
+  for (; i < E_getTextLen(e); i++) {
+    char c = E_getChar(e, i);
     if (c == '\n') {
       break;
     }
@@ -862,6 +907,7 @@ void runEditor(E *e) {
             render = true;
           } else if (keySym == SDLK_RETURN) {
             insertCharAtCursor(e, '\n');
+            render = true;
           } else if (keySym == SDLK_TAB) {
             // ignore tab if it is from alt-tab when we are about to loose or have just gained focus
             if (!(event.key.keysym.mod & KMOD_ALT) && !justGainedFocus) {
