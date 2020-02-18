@@ -8,6 +8,7 @@
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include "font.h"
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
@@ -251,7 +252,7 @@ E_Glyph *getGlyph(E *e, unsigned char c) {
 
 bool initFont(E *e) {
   FT_Face face;
-  FT_Error error = FT_New_Face(e->ftLib, "/home/nd/Downloads/JetBrainsMono-Regular.ttf", 0, &face);
+  FT_Error error = FT_New_Memory_Face(e->ftLib, font, sizeof(font), 0, &face);
   if (error) {
     e->error = "Failed to init face";
     return false;
