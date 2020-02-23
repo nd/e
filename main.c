@@ -55,7 +55,7 @@ typedef struct BufHdr {
 #define buf_len(b) ((b) ? buf_hdr(b)->len : 0)
 #define buf_cap(b) ((b) ? buf_hdr(b)->cap : 0)
 #define buf_free(b) ((b) ? (free(buf_hdr(b)), b = 0) : 0)
-#define buf_push(b, x) (b = buf_grow(b, buf_len(b) + 1, sizeof(*(b))), b[buf_hdr(b)->len++] = (x))
+#define buf_push(b, x) (b = buf_grow(b, buf_len(b) + 1, sizeof(*(b))), (b)[buf_hdr(b)->len++] = (x))
 void *buf_grow(void *buf, size_t new_len, size_t elem_size) {
   if (buf_cap(buf) > new_len) {
     return buf;
@@ -162,6 +162,90 @@ void moveLineDown(E *e);
 void saveFile(E *e);
 void deleteCharAtCursor(E *e);
 
+void setKeyHandler(E *e, const char *key, E_ActionHandler *handler) {
+  size_t keyLen = strlen(key);
+  Uint16 mod = 0;
+  E_Key *keySequence = 0;
+  for (size_t i = 0; i < keyLen; ) {
+    char c = key[i];
+    switch (c) {
+      case '\\':
+        if (i == keyLen - 1) {
+          die("key is terminated with \\");
+          return;
+        }
+        i++;
+        char next = key[i];
+        switch(next) {
+          case '\\':
+            buf_push(keySequence, ((E_Key){.sym = SDLK_BACKSLASH, .mod = mod, .hasMoreKeys = true}));
+            mod = 0;
+            break;
+          case 'C':
+            mod |= KMOD_CTRL;
+            break;
+          case 'A':
+            mod |= KMOD_ALT;
+            break;
+          case 'L':
+            buf_push(keySequence, ((E_Key){.sym = SDLK_LEFT, .mod = mod, .hasMoreKeys = true}));
+            mod = 0;
+            break;
+          case 'R':
+            buf_push(keySequence, ((E_Key){.sym = SDLK_RIGHT, .mod = mod, .hasMoreKeys = true}));
+            mod = 0;
+            break;
+          case 'U':
+            buf_push(keySequence, ((E_Key){.sym = SDLK_UP, .mod = mod, .hasMoreKeys = true}));
+            mod = 0;
+            break;
+          case 'D':
+            buf_push(keySequence, ((E_Key){.sym = SDLK_DOWN, .mod = mod, .hasMoreKeys = true}));
+            mod = 0;
+            break;
+          default:
+            die("wrong key");
+            break;
+        }
+        i++;
+        break;
+      default:
+        buf_push(keySequence, ((E_Key){.sym = c, .mod = mod, .hasMoreKeys = true}));
+        mod = 0;
+        i++;
+        break;
+    }
+  }
+
+  if (!keySequence) {
+    return;
+  }
+
+  E_Key **keys = &e->rootKeys;
+  size_t keySeqLen = buf_len(keySequence);
+  for (size_t i = 0; i < keySeqLen; i++) {
+    E_Key newKey = keySequence[i];
+    E_Key *installedKey = 0;
+    size_t keyLayerLen = buf_len(*keys);
+    for (size_t j = 0; j < keyLayerLen; j++) {
+      E_Key k = (*keys)[j];
+      if (k.sym == newKey.sym && (k.mod == newKey.mod || k.mod & newKey.mod)) {
+        installedKey = &(*keys)[j];
+        break;
+      }
+    }
+    if (!installedKey) {
+      buf_push(*keys, newKey);
+      installedKey = &(*keys)[buf_len(*keys) - 1];
+    }
+    keys = &installedKey->keys;
+    if (i == keySeqLen - 1) { //set handler in the last key in the sequence
+      installedKey->hasMoreKeys = false;
+      installedKey->handler = handler;
+    }
+  }
+}
+
 E init(char *path) {
   FILE *file = fopen(path, "r+b");
   if (!file) {
@@ -197,23 +281,7 @@ E init(char *path) {
     die("Failed to init ft");
   }
 
-  E_Key *keys = {0};
-  buf_push(keys, ((E_Key){.sym = SDLK_LEFT, .handler = moveLeft}));
-  buf_push(keys, ((E_Key){.sym = SDLK_b, .mod = KMOD_CTRL, .handler = moveLeft}));
-  buf_push(keys, ((E_Key){.sym = SDLK_RIGHT, .handler = moveRight}));
-  buf_push(keys, ((E_Key){.sym = SDLK_f, .mod = KMOD_CTRL, .handler = moveRight}));
-  buf_push(keys, ((E_Key){.sym = SDLK_UP, .handler = moveLineUp}));
-  buf_push(keys, ((E_Key){.sym = SDLK_p, .mod = KMOD_CTRL, .handler = moveLineUp}));
-  buf_push(keys, ((E_Key){.sym = SDLK_DOWN, .handler = moveLineDown}));
-  buf_push(keys, ((E_Key){.sym = SDLK_n, .mod = KMOD_CTRL, .handler = moveLineDown}));
-  buf_push(keys, ((E_Key){.sym = SDLK_DELETE, .handler = deleteCharAtCursor}));
-  buf_push(keys, ((E_Key){.sym = SDLK_d, .mod = KMOD_CTRL, .handler = deleteCharAtCursor}));
-
-  E_Key *ctrlX = {0};
-  buf_push(ctrlX, ((E_Key){.sym = SDLK_s, .mod = KMOD_CTRL, .handler = saveFile}));
-  buf_push(keys, ((E_Key){.sym = SDLK_x, .mod = KMOD_CTRL, .hasMoreKeys = true, .keys = ctrlX}));
-
-  return (E) {
+  E e = (E) {
           .path = path,
           .fileName = fileName,
           .height=768,
@@ -222,10 +290,22 @@ E init(char *path) {
           .textLen = strlen(text),
           .ftLib = ftLib,
           .perfCountFreqMS = SDL_GetPerformanceFrequency() / 1000,
-          .rootKeys = keys,
-          .curKeys = keys,
-          .gap = {0},
   };
+
+  setKeyHandler(&e, "\\L", moveLeft);
+  setKeyHandler(&e, "\\Cb", moveLeft);
+  setKeyHandler(&e, "\\R", moveRight);
+  setKeyHandler(&e, "\\Cf", moveRight);
+  setKeyHandler(&e, "\\U", moveLineUp);
+  setKeyHandler(&e, "\\Cp", moveLineUp);
+  setKeyHandler(&e, "\\D", moveLineDown);
+  setKeyHandler(&e, "\\Cn", moveLineDown);
+  setKeyHandler(&e, "\\Cd", deleteCharAtCursor);
+  setKeyHandler(&e, "\\Cx\\Cs", saveFile);
+
+  e.curKeys = e.rootKeys;
+
+  return e;
 }
 
 
