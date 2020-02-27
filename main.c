@@ -98,6 +98,63 @@ typedef struct E_Key {
   };
 } E_Key;
 
+typedef struct Buffer {
+  char *text;
+  size_t bufferSize;
+  size_t gapStart;
+  size_t gapEnd;
+} Buffer;
+
+size_t getTextSize(Buffer *buffer) {
+  size_t gapSize = buffer->gapEnd - buffer->gapStart;
+  return buffer->bufferSize - gapSize;
+}
+
+size_t getPhysicalOffset(Buffer *buffer, size_t logicalOffset) {
+  assert(logicalOffset < buffer->bufferSize);
+  if (logicalOffset < buffer->gapStart) {
+    return logicalOffset;
+  } else {
+    return buffer->gapEnd + (logicalOffset - buffer->gapStart);
+  }
+}
+
+void moveGap(Buffer *buffer, size_t offset) {
+  size_t gapSize = buffer->gapEnd - buffer->gapStart;
+  if (gapSize == 0) {
+    size_t newBufferSize = buffer->bufferSize * 2 + 1;
+    buffer->text = xrealloc(buffer->text, newBufferSize);
+    buffer->gapStart = buffer->bufferSize;
+    buffer->gapEnd = newBufferSize;
+    buffer->bufferSize = newBufferSize;
+    gapSize = buffer->gapEnd - buffer->gapStart;
+  }
+  if (offset < buffer->gapStart) {
+    memmove(&buffer->text[offset + gapSize], &buffer->text[offset], buffer->gapStart - offset);
+  } else if (offset > buffer->gapStart) {
+    memmove(&buffer->text[buffer->gapStart], &buffer->text[buffer->gapEnd], offset - buffer->gapStart);
+  }
+  buffer->gapStart = offset;
+  buffer->gapEnd = buffer->gapStart + gapSize;
+#if 0
+  for (size_t i = buffer->gapStart; i < buffer->gapEnd; i++) {
+    buffer->text[i] = '*';
+  }
+#endif
+}
+
+void insertChar(Buffer *buffer, size_t offset, char c) {
+  moveGap(buffer, offset);
+  buffer->text[buffer->gapStart++] = c;
+}
+
+void deleteChar(Buffer *buffer, size_t offset) {
+  moveGap(buffer, offset);
+  if (buffer->gapEnd < buffer->bufferSize - 1) {
+    buffer->gapEnd++;
+  }
+}
+
 typedef struct E_Glyph {
   SDL_Texture *texture;
   int h;
@@ -111,8 +168,10 @@ typedef struct E_Glyph {
 typedef struct E {
   const char *path;
   const char *fileName;
+
   char *text;
-  size_t textLen;
+  Buffer buffer;
+
   char lineBuf[1000];
   const char *error;
   bool quit;
@@ -146,8 +205,6 @@ typedef struct E {
 
   E_Key *rootKeys;
   E_Key *curKeys;
-
-  Gap gap;
 } E;
 
 
@@ -286,8 +343,10 @@ E init(char *path) {
           .fileName = fileName,
           .height=768,
           .width=1024,
-          .text = text,
-          .textLen = strlen(text),
+          .buffer = {
+                  .text = text,
+                  .bufferSize = strlen(text) + 1,
+          },
           .ftLib = ftLib,
           .perfCountFreqMS = SDL_GetPerformanceFrequency() / 1000,
   };
@@ -433,8 +492,8 @@ bool initUI(E *e) {
 
 
 void closeEditor(E *e) {
-  if (e->text) {
-    free(e->text);
+  if (e->buffer.text) {
+    free(e->buffer.text);
   }
   if (e->ftLib) {
     FT_Done_FreeType(e->ftLib);
@@ -449,48 +508,16 @@ void closeEditor(E *e) {
 }
 
 size_t E_getTextLen(E *e) {
-  return e->textLen + buf_len(e->gap.buf);
+  return getTextSize(&e->buffer);
 }
 
 char E_getChar(E *e, size_t offset) {
-  if (offset < e->gap.offset) {
-    return e->text[offset];
+  size_t physicalOffset = getPhysicalOffset(&e->buffer, offset);
+  if (physicalOffset < e->buffer.bufferSize) {
+    return e->buffer.text[physicalOffset];
+  } else {
+    return '\0';
   }
-  size_t offsetFromGapStart = offset - e->gap.offset;
-  size_t gapLen = buf_len(e->gap.buf);
-  if (offsetFromGapStart < gapLen) {
-    return e->gap.buf[offsetFromGapStart];
-  }
-  return e->text[offset - gapLen];
-}
-
-void flushGap(E *e) {
-  size_t gapLen = buf_len(e->gap.buf);
-  if (gapLen) {
-    size_t newTextLen = E_getTextLen(e);
-    char *newText = xalloc(newTextLen + 1);
-    strncpy(newText, e->text, e->gap.offset);
-    strncpy(&newText[e->gap.offset], e->gap.buf, gapLen);
-    strncpy(&newText[e->gap.offset + gapLen], &e->text[e->gap.offset], e->textLen - e->gap.offset);
-    newText[newTextLen] = '\0';
-    free(e->text);
-    e->text = newText;
-    e->textLen = newTextLen;
-    buf_set_len(e->gap.buf, 0);
-  }
-}
-
-int getCursorOffsetInLine(E *e) {
-  int result = 0;
-  if (e->cursor > 0) {
-    for (size_t i = e->cursor - 1; i <= e->cursor; i--) {
-      if (E_getChar(e, i) == '\n') {
-        break;
-      }
-      result++;
-    }
-  }
-  return result;
 }
 
 typedef struct LineIter {
@@ -707,92 +734,6 @@ void updateUI(E *e) {
   SDL_RenderPresent(e->renderer);
 }
 
-void insertCharAtCursor(E *e, char c) {
-  assert(0 <= e->cursor && e->cursor <= E_getTextLen(e));
-  if (e->gap.offset + buf_len(e->gap.buf) != e->cursor) {
-    flushGap(e);
-    e->gap.offset = e->cursor;
-  }
-  buf_push(e->gap.buf, c);
-
-  e->cursor++;
-  if (c == '\n') {
-    if (e->visibleLineCursor < e->visibleLineCount - 1) {
-      e->visibleLineCursor++;
-    } else {
-      e->visibleLineTop++;
-    }
-  }
-}
-
-void deleteCharAtCursor(E *e) {
-  assert(0 <= e->cursor && e->cursor <= E_getTextLen(e));
-  if (e->cursor == E_getTextLen(e)) {
-    // cursor is at '\0' terminating the text, deleting it is noop
-    return;
-  }
-  if (e->gap.offset <= e->cursor && e->cursor < e->gap.offset + buf_len(e->gap.buf)) {
-    // delete inside a gap
-    size_t i = e->cursor - e->gap.offset;
-    for (; i < buf_len(e->gap.buf) - 1; i++) {
-      e->gap.buf[i] = e->gap.buf[i + 1];
-    }
-    buf_set_len(e->gap.buf, buf_len(e->gap.buf) - 1);
-  } else {
-    flushGap(e);
-    size_t newTextLen = E_getTextLen(e) - 1;
-    char *newText = xalloc(newTextLen + 1);
-    strncpy(newText, e->text, e->cursor);
-    size_t afterCursor = e->cursor + 1;
-    if (afterCursor < e->textLen) {
-      strncpy(&newText[e->cursor], &e->text[afterCursor], e->textLen - afterCursor);
-    }
-    newText[newTextLen] = '\0';
-    free(e->text);
-    e->text = newText;
-    e->textLen = newTextLen;
-  }
-  e->cursor = MIN(e->cursor, E_getTextLen(e));
-}
-
-void saveFile(E *e) {
-  FILE *file = fopen(e->path, "w+b");
-  if (!file) {
-    die("Open file failed");
-  }
-  flushGap(e);
-  size_t written = fwrite(e->text, 1, E_getTextLen(e), file);
-  fclose(file);
-  if (written != E_getTextLen(e)) {
-    die("Write failed");
-  }
-}
-
-void incVisibleLine(E *e) {
-  if (e->visibleLineCursor < e->visibleLineCount - 1) {
-    e->visibleLineCursor++;
-  } else {
-    bool hasMoreLines = false;
-    for (size_t i = e->cursor; i < E_getTextLen(e); i++) {
-      if (E_getChar(e, i) == '\n') {
-        hasMoreLines = true;
-        break;
-      }
-    }
-    if (hasMoreLines) {
-      e->visibleLineTop++;
-    }
-  }
-}
-
-void decVisibleLine(E *e) {
-  if (e->visibleLineCursor > 0) {
-    e->visibleLineCursor--;
-  } else if (e->visibleLineTop > 0) {
-    e->visibleLineTop--;
-  }
-}
-
 int getCursorOffsetX(E *e) {
   size_t cursor = e->cursor;
   if (cursor == 0) {
@@ -833,6 +774,69 @@ void updateScreenLeftBorderOffsetX(E *e) {
     e->screenLeftBorderOffsetX = nextCharOffset - e->width;
   } else if (cursorOffsetX < e->screenLeftBorderOffsetX) {
     e->screenLeftBorderOffsetX = cursorOffsetX;
+  }
+}
+
+void insertCharAtCursor(E *e, char c) {
+  assert(0 <= e->cursor && e->cursor <= E_getTextLen(e));
+  insertChar(&e->buffer, e->cursor, c);
+
+  e->cursor++;
+  if (c == '\n') {
+    if (e->visibleLineCursor < e->visibleLineCount - 1) {
+      e->visibleLineCursor++;
+    } else {
+      e->visibleLineTop++;
+    }
+  }
+  updateScreenLeftBorderOffsetX(e);
+}
+
+void deleteCharAtCursor(E *e) {
+  assert(0 <= e->cursor && e->cursor <= E_getTextLen(e));
+  deleteChar(&e->buffer, e->cursor);
+  if (e->cursor == E_getTextLen(e)) {
+    // cursor is at '\0' terminating the text, deleting it is noop
+    return;
+  }
+  e->cursor = MIN(e->cursor, E_getTextLen(e));
+}
+
+void saveFile(E *e) {
+  FILE *file = fopen(e->path, "w+b");
+  if (!file) {
+    die("Open file failed");
+  }
+  size_t w1 = fwrite(e->buffer.text, 1, e->buffer.gapStart, file);
+  size_t w2 = fwrite(&e->buffer.text[e->buffer.gapEnd], 1, e->buffer.bufferSize - e->buffer.gapEnd, file);
+  fclose(file);
+  if (w1 + w2 != E_getTextLen(e)) {
+    die("Write failed");
+  }
+}
+
+void incVisibleLine(E *e) {
+  if (e->visibleLineCursor < e->visibleLineCount - 1) {
+    e->visibleLineCursor++;
+  } else {
+    bool hasMoreLines = false;
+    for (size_t i = e->cursor; i < E_getTextLen(e); i++) {
+      if (E_getChar(e, i) == '\n') {
+        hasMoreLines = true;
+        break;
+      }
+    }
+    if (hasMoreLines) {
+      e->visibleLineTop++;
+    }
+  }
+}
+
+void decVisibleLine(E *e) {
+  if (e->visibleLineCursor > 0) {
+    e->visibleLineCursor--;
+  } else if (e->visibleLineTop > 0) {
+    e->visibleLineTop--;
   }
 }
 
