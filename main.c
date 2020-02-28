@@ -107,11 +107,10 @@ typedef struct Buffer {
 
 size_t getTextSize(Buffer *buffer) {
   size_t gapSize = buffer->gapEnd - buffer->gapStart;
-  return buffer->bufferSize - gapSize;
+  return buffer->bufferSize - gapSize - 1; // 1 for '\0' in the end
 }
 
 size_t getPhysicalOffset(Buffer *buffer, size_t logicalOffset) {
-  assert(logicalOffset < buffer->bufferSize);
   if (logicalOffset < buffer->gapStart) {
     return logicalOffset;
   } else {
@@ -218,6 +217,8 @@ void moveLineUp(E *e);
 void moveLineDown(E *e);
 void saveFile(E *e);
 void deleteCharAtCursor(E *e);
+void moveToStartOfLine(E *e);
+void moveToEndOfLine(E *e);
 
 void setKeyHandler(E *e, const char *key, E_ActionHandler *handler) {
   size_t keyLen = strlen(key);
@@ -359,6 +360,8 @@ E init(char *path) {
   setKeyHandler(&e, "\\Cp", moveLineUp);
   setKeyHandler(&e, "\\D", moveLineDown);
   setKeyHandler(&e, "\\Cn", moveLineDown);
+  setKeyHandler(&e, "\\Ca", moveToStartOfLine);
+  setKeyHandler(&e, "\\Ce", moveToEndOfLine);
   setKeyHandler(&e, "\\Cd", deleteCharAtCursor);
   setKeyHandler(&e, "\\Cx\\Cs", saveFile);
 
@@ -837,6 +840,40 @@ void decVisibleLine(E *e) {
     e->visibleLineCursor--;
   } else if (e->visibleLineTop > 0) {
     e->visibleLineTop--;
+  }
+}
+
+void moveToStartOfLine(E *e) {
+  if (e->cursor > 0) {
+    size_t i = e->cursor - 1;
+    while (1) {
+      if (E_getChar(e, i) == '\n' || i == 0) {
+        break;
+      }
+      i--;
+    }
+    e->cursor = i == 0 ? i : i + 1;
+    updateScreenLeftBorderOffsetX(e);
+    e->desiredCursorOffsetX = 0;
+  }
+}
+
+void moveToEndOfLine(E *e) {
+  size_t textLen = E_getTextLen(e);
+  if (e->cursor < textLen) {
+    char c = E_getChar(e, e->cursor);
+    if (c == '\n') {
+      return;
+    }
+    size_t i = e->cursor;
+    for (; i < textLen; i++) {
+      if (E_getChar(e, i) == '\n') {
+        break;
+      }
+    }
+    e->cursor = i;
+    updateScreenLeftBorderOffsetX(e);
+    e->desiredCursorOffsetX = 0;
   }
 }
 
