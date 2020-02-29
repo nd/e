@@ -164,6 +164,32 @@ typedef struct E_Glyph {
   bool initialized;
 } E_Glyph;
 
+typedef struct KillRingEntry {
+  char *text;
+  size_t len;
+} KillRingEntry;
+
+typedef struct KillRing {
+  KillRingEntry entries[2];
+  size_t currentEntry;
+} KillRing;
+
+KillRingEntry *KillRing_getCurrentEntry(KillRing *killRing) {
+  KillRingEntry entry = killRing->entries[killRing->currentEntry];
+  return entry.text ? &killRing->entries[killRing->currentEntry] : 0;
+}
+
+void KillRing_push(KillRing *killRing, char *text, size_t len) {
+  size_t index = (killRing->currentEntry + 1) % (sizeof(killRing->entries) / sizeof(killRing->entries[0]));
+  KillRingEntry *entry = &killRing->entries[index];
+  if (entry->text) {
+    free(entry->text);
+  }
+  entry->text = text;
+  entry->len = len;
+  killRing->currentEntry = index;
+}
+
 typedef struct E {
   const char *path;
   const char *fileName;
@@ -180,6 +206,10 @@ typedef struct E {
   int textHeight;
   int statusLineHeight;
   int statusLineBaselineOffset;
+
+  size_t selectionStart;
+  bool hasSelection;
+  KillRing killRing;
 
   int lineHeight;
   int visibleLineCount; // number of visible lines on the screen
@@ -219,6 +249,10 @@ void saveFile(E *e);
 void deleteCharAtCursor(E *e);
 void moveToStartOfLine(E *e);
 void moveToEndOfLine(E *e);
+void startSelection(E *e);
+void escape(E *e);
+void copySelectionToKillRing(E *e);
+void yank(E *e);
 
 void setKeyHandler(E *e, const char *key, E_ActionHandler *handler) {
   size_t keyLen = strlen(key);
@@ -363,6 +397,10 @@ E init(char *path) {
   setKeyHandler(&e, "\\Ca", moveToStartOfLine);
   setKeyHandler(&e, "\\Ce", moveToEndOfLine);
   setKeyHandler(&e, "\\Cd", deleteCharAtCursor);
+  setKeyHandler(&e, "\\C ", startSelection);
+  setKeyHandler(&e, "\\Cg", escape);
+  setKeyHandler(&e, "\\Aw", copySelectionToKillRing);
+  setKeyHandler(&e, "\\Cy", yank);
   setKeyHandler(&e, "\\Cx\\Cs", saveFile);
 
   e.curKeys = e.rootKeys;
@@ -582,26 +620,34 @@ int getCurrentLineIndex(E *e) {
 void renderCursor(E *e, int penX, int penY) {
   Uint8 r = 0, g = 0, b = 0, a = 0;
   SDL_GetRenderDrawColor(e->renderer, &r, &g, &b, &a);
-  SDL_SetRenderDrawColor(e->renderer, 0x0, 0x0, 0xff, 0xf);
+  SDL_SetRenderDrawColor(e->renderer, 0x0, 0x0, 0x0, 0xff);
   SDL_Rect cursorRect = {penX, penY - e->lineHeight, 2, e->lineHeight + 5};
   SDL_RenderFillRect(e->renderer, &cursorRect);
   SDL_SetRenderDrawColor(e->renderer, r, g, b, a);
 }
 
-void renderGlyph(E *e, E_Glyph *glyph, int penX, int penY, bool drawGlyphBox) {
-  if (glyph && glyph->texture) {
+void renderGlyph(E *e, E_Glyph *glyph, int penX, int penY, bool drawGlyphBox, bool withSelection) {
+  if (glyph) {
+    Uint8 r = 0, g = 0, b = 0, a = 0;
+    SDL_GetRenderDrawColor(e->renderer, &r, &g, &b, &a);
     if (drawGlyphBox) {
-      Uint8 r = 0, g = 0, b = 0, a = 0;
-      SDL_GetRenderDrawColor(e->renderer, &r, &g, &b, &a);
-      SDL_SetRenderDrawColor(e->renderer, 0xff, 0x0, 0x0, 0xf);
+      SDL_SetRenderDrawColor(e->renderer, 0xff, 0x0, 0x0, 0xff);
       SDL_RenderDrawLine(e->renderer, penX + glyph->bearingX, penY - glyph->bearingY, penX + + glyph->bearingX + glyph->w, penY - glyph->bearingY);
       SDL_RenderDrawLine(e->renderer, penX + glyph->bearingX, penY - glyph->bearingY + glyph->h, penX + glyph->bearingX + glyph->w, penY - glyph->bearingY + glyph->h);
       SDL_RenderDrawLine(e->renderer, penX + glyph->bearingX, penY - glyph->bearingY, penX + glyph->bearingX, penY - glyph->bearingY + glyph->h);
       SDL_RenderDrawLine(e->renderer, penX + glyph->bearingX + glyph->w, penY - glyph->bearingY, penX + glyph->bearingX + glyph->w, penY - glyph->bearingY + glyph->h);
       SDL_SetRenderDrawColor(e->renderer, r, g, b, a);
     }
-    SDL_Rect dstRect = (SDL_Rect){penX + glyph->bearingX, penY - glyph->bearingY, glyph->w, glyph->h};
-    SDL_RenderCopy(e->renderer, glyph->texture, 0, &dstRect);
+    if (withSelection) {
+      SDL_SetRenderDrawColor(e->renderer, 0xAD, 0xD8, 0xE6, 0xff);
+      SDL_Rect selectionRect = (SDL_Rect){penX, penY - e->lineHeight, glyph->advance, e->lineHeight + 5};
+      SDL_RenderFillRect(e->renderer, &selectionRect);
+      SDL_SetRenderDrawColor(e->renderer, r, g, b, a);
+    }
+    if (glyph->texture) {
+      SDL_Rect dstRect = (SDL_Rect){penX + glyph->bearingX, penY - glyph->bearingY, glyph->w, glyph->h};
+      SDL_RenderCopy(e->renderer, glyph->texture, 0, &dstRect);
+    }
   }
 }
 
@@ -610,7 +656,7 @@ void renderLine(E *e, char *line, size_t size, int penX, int penY) {
   for (int i = 0; i < size; i++) {
     char c = line[i];
     E_Glyph *glyph = getGlyph(e, c);
-    renderGlyph(e, glyph, penX, penY, false);
+    renderGlyph(e, glyph, penX, penY, false, false);
     penX += glyph->advance;
     if (prev) {
       penX += getKerning(e, prev, c);
@@ -635,7 +681,7 @@ void debugRender(E *e) {
   for (int i = 0; i < strlen(txt); i++) {
     char c = txt[i];
     E_Glyph *glyph = getGlyph(e, c);
-    renderGlyph(e, glyph, penx, peny, false);
+    renderGlyph(e, glyph, penx, peny, false, false);
     penx += glyph->advance;
     if (prev) {
       penx += getKerning(e, prev, c);
@@ -687,10 +733,19 @@ void renderText(E *e) {
       } else {
         penX = penX + kerning;
       }
+      bool withSelection = 0;
+      if (e->hasSelection) {
+        if (e->cursor > e->selectionStart && e->selectionStart <= i && i < e->cursor) {
+          withSelection = 1;
+        }
+        if (e->cursor < e->selectionStart && e->cursor <= i && i < e->selectionStart) {
+          withSelection = 1;
+        }
+      }
+      renderGlyph(e, glyph, penX, penY, false, withSelection);
       if (lineNum == currentLine && i == e->cursor) {
         renderCursor(e, penX, penY);
       }
-      renderGlyph(e, glyph, penX, penY, false);
       penX += glyph->advance;
       prevGlyphRightBorder = glyphRightBorder;
       prev = c;
@@ -700,7 +755,7 @@ void renderText(E *e) {
       if (lineNum == currentLine && lineEnd == e->cursor) {
         renderCursor(e, penX, penY);
       }
-      renderGlyph(e, getGlyph(e, ' '), penX, penY, false);
+      renderGlyph(e, getGlyph(e, ' '), penX, penY, false, false);
     }
 
     if (penY > winHeight) {
@@ -877,6 +932,37 @@ void moveToEndOfLine(E *e) {
   }
 }
 
+void startSelection(E *e) {
+  e->selectionStart = e->cursor;
+  e->hasSelection = 1;
+}
+
+void escape(E *e) {
+  e->hasSelection = 0;
+}
+
+void copySelectionToKillRing(E *e) {
+  size_t start = MIN(e->selectionStart, e->cursor);
+  size_t end = MAX(e->selectionStart, e->cursor);
+  size_t selectionSize = end - start;
+  char *selection = xalloc(selectionSize);
+  size_t j = 0;
+  for (size_t i = start; i < end; i++) {
+    selection[j++] = E_getChar(e, i);
+  }
+  KillRing_push(&e->killRing, selection, selectionSize);
+  e->hasSelection = 0;
+}
+
+void yank(E *e) {
+  KillRingEntry *entry = KillRing_getCurrentEntry(&e->killRing);
+  if (entry) {
+    for (size_t i = 0; i < entry->len; i++) {
+      insertCharAtCursor(e, entry->text[i]);
+    }
+  }
+}
+
 void moveLeft(E *e) {
   if (e->cursor > 0) {
     e->cursor--;
@@ -1011,16 +1097,19 @@ void runEditor(E *e) {
     while (SDL_PollEvent(&event)) {
       eventCount++;
       bool render = false;
+      SDL_Keymod modState = SDL_GetModState();
       switch (event.type) {
         case SDL_QUIT:
           e->quit = true;
           break;
         case SDL_TEXTINPUT: {
-          size_t textLen = strlen(event.text.text);
-          for (size_t i = 0; i < textLen; i++) {
-            insertCharAtCursor(e, event.text.text[i]);
+          if (!(modState & KMOD_ALT)) {
+            size_t textLen = strlen(event.text.text);
+            for (size_t i = 0; i < textLen; i++) {
+              insertCharAtCursor(e, event.text.text[i]);
+            }
+            render = true;
           }
-          render = true;
           break;
         }
         case SDL_KEYDOWN: {
@@ -1032,11 +1121,11 @@ void runEditor(E *e) {
             render = true;
           } else if (keySym == SDLK_TAB) {
             // ignore tab if it is from alt-tab when we are about to loose or have just gained focus
-            if (!(event.key.keysym.mod & KMOD_ALT) && !justGainedFocus) {
+            if ((modState & KMOD_ALT) != 0 && !justGainedFocus) {
               insertCharAtCursor(e, '\t');
               render = true;
             }
-          } else if (event.key.keysym.mod & KMOD_CTRL) {
+          } else if (modState & KMOD_CTRL) {
             switch (keySym) {
               case SDLK_r:
                 render = false;
