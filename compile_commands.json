@@ -1,0 +1,8 @@
+[
+  {
+    "name": "foo",
+    "directory": "/home/nd/p/practice-c/e",
+    "command": "cc main.c -o e -g -L/usr/lib/x86_64-linux-gnu -D_REENTRANT -I/usr/include/SDL2 -lSDL2 -I/usr/include/freetype2 -I/usr/include/libpng16 -lfreetype -lm",
+    "file": "main.c"
+  }
+]
