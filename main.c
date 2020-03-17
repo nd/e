@@ -877,7 +877,7 @@ void saveFile(E *e) {
   size_t w1 = fwrite(e->buffer.text, 1, e->buffer.gapStart, file);
   size_t w2 = fwrite(&e->buffer.text[e->buffer.gapEnd], 1, e->buffer.bufferSize - e->buffer.gapEnd, file);
   fclose(file);
-  if (w1 + w2 != E_getTextLen(e)) {
+  if (w1 + w2 != E_getTextLen(e) + 1) {
     die("Write failed");
   }
 }
