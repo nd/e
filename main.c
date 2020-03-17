@@ -783,7 +783,7 @@ void renderStatusLine(E *e, Uint64 t0) {
   int lineIndex = 0;
   int lineStart = 0;
   fillCurrentLineAndOffset(e, &lineIndex, &lineStart);
-  int count = snprintf(e->lineBuf, 1000, "  %s (%d:%d)   %.1fms", e->fileName, lineIndex+1, e->cursor - lineStart, duration);
+  int count = snprintf(e->lineBuf, 1000, "  %s (%d:%lu)   %.1fms", e->fileName, lineIndex+1, e->cursor - lineStart, duration);
   renderLine(e, e->lineBuf, count, 0, e->height - e->statusLineBaselineOffset);
 }
 
