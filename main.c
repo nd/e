@@ -247,6 +247,7 @@ void moveLineUp(E *e);
 void moveLineDown(E *e);
 void saveFile(E *e);
 void deleteCharAtCursor(E *e);
+void deleteCharBackwards(E *e);
 void moveToStartOfLine(E *e);
 void moveToEndOfLine(E *e);
 void startSelection(E *e);
@@ -397,6 +398,7 @@ E init(char *path) {
   setKeyHandler(&e, "\\Ca", moveToStartOfLine);
   setKeyHandler(&e, "\\Ce", moveToEndOfLine);
   setKeyHandler(&e, "\\Cd", deleteCharAtCursor);
+  setKeyHandler(&e, "\\Ch", deleteCharBackwards);
   setKeyHandler(&e, "\\C ", startSelection);
   setKeyHandler(&e, "\\Cg", escape);
   setKeyHandler(&e, "\\Aw", copySelectionToKillRing);
@@ -858,6 +860,13 @@ void deleteCharAtCursor(E *e) {
     return;
   }
   e->cursor = MIN(e->cursor, E_getTextLen(e));
+}
+
+void deleteCharBackwards(E *e) {
+  if (e->cursor > 0) {
+    deleteChar(&e->buffer, e->cursor - 1);
+    e->cursor = e->cursor - 1;
+  }
 }
 
 void saveFile(E *e) {
