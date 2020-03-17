@@ -849,6 +849,7 @@ void insertCharAtCursor(E *e, char c) {
       e->visibleLineTop++;
     }
   }
+  e->hasSelection = 0;
   updateScreenLeftBorderOffsetX(e);
 }
 
@@ -859,6 +860,7 @@ void deleteCharAtCursor(E *e) {
     // cursor is at '\0' terminating the text, deleting it is noop
     return;
   }
+  e->hasSelection = 0;
   e->cursor = MIN(e->cursor, E_getTextLen(e));
 }
 
@@ -866,6 +868,7 @@ void deleteCharBackwards(E *e) {
   if (e->cursor > 0) {
     deleteChar(&e->buffer, e->cursor - 1);
     e->cursor = e->cursor - 1;
+    e->hasSelection = 0;
   }
 }
 
