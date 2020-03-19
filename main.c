@@ -147,6 +147,13 @@ void insertChar(Buffer *buffer, size_t offset, char c) {
   buffer->text[buffer->gapStart++] = c;
 }
 
+void deleteRegion(Buffer *buffer, size_t start, size_t end) {
+  size_t min = MIN(start, end);
+  size_t max = MAX(start, end);
+  moveGap(buffer, min);
+  buffer->gapEnd += (max - min);
+}
+
 void deleteChar(Buffer *buffer, size_t offset) {
   moveGap(buffer, offset);
   if (buffer->gapEnd < buffer->bufferSize - 1) {
@@ -855,17 +862,31 @@ void insertCharAtCursor(E *e, char c) {
 
 void deleteCharAtCursor(E *e) {
   assert(0 <= e->cursor && e->cursor <= E_getTextLen(e));
-  deleteChar(&e->buffer, e->cursor);
-  if (e->cursor == E_getTextLen(e)) {
-    // cursor is at '\0' terminating the text, deleting it is noop
-    return;
+  if (e->hasSelection) {
+    deleteRegion(&e->buffer, e->selectionStart, e->cursor);
+    if (e->cursor > e->selectionStart) {
+      e->cursor = e->selectionStart;
+    }
+    e->hasSelection = 0;
+  } else {
+    deleteChar(&e->buffer, e->cursor);
+    if (e->cursor == E_getTextLen(e)) {
+      // cursor is at '\0' terminating the text, deleting it is noop
+      return;
+    }
+    e->hasSelection = 0;
+    e->cursor = MIN(e->cursor, E_getTextLen(e));
   }
-  e->hasSelection = 0;
-  e->cursor = MIN(e->cursor, E_getTextLen(e));
 }
 
 void deleteCharBackwards(E *e) {
-  if (e->cursor > 0) {
+  if (e->hasSelection) {
+    deleteRegion(&e->buffer, e->selectionStart, e->cursor);
+    if (e->cursor > e->selectionStart) {
+      e->cursor = e->selectionStart;
+    }
+    e->hasSelection = 0;
+  } else if (e->cursor > 0) {
     deleteChar(&e->buffer, e->cursor - 1);
     e->cursor = e->cursor - 1;
     e->hasSelection = 0;
