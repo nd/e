@@ -252,11 +252,13 @@ void moveLeft(E *e);
 void moveRight(E *e);
 void moveLineUp(E *e);
 void moveLineDown(E *e);
+void moveToStartOfLine(E *e);
+void moveToEndOfLine(E *e);
+void moveWordBackward(E *e);
+void moveWordForward(E *e);
 void saveFile(E *e);
 void deleteCharAtCursor(E *e);
 void deleteCharBackwards(E *e);
-void moveToStartOfLine(E *e);
-void moveToEndOfLine(E *e);
 void startSelection(E *e);
 void escape(E *e);
 void copySelectionToKillRing(E *e);
@@ -404,6 +406,8 @@ E init(char *path) {
   setKeyHandler(&e, "\\Cn", moveLineDown);
   setKeyHandler(&e, "\\Ca", moveToStartOfLine);
   setKeyHandler(&e, "\\Ce", moveToEndOfLine);
+  setKeyHandler(&e, "\\Ab", moveWordBackward);
+  setKeyHandler(&e, "\\Af", moveWordForward);
   setKeyHandler(&e, "\\Cd", deleteCharAtCursor);
   setKeyHandler(&e, "\\Ch", deleteCharBackwards);
   setKeyHandler(&e, "\\C ", startSelection);
@@ -1014,6 +1018,67 @@ void moveRight(E *e) {
       incVisibleLine(e);
     }
     e->cursor++;
+    updateScreenLeftBorderOffsetX(e);
+    e->desiredCursorOffsetX = 0;
+  }
+}
+
+void moveWordBackward(E *e) {
+  if (e->cursor > 0) {
+    size_t initial = e->cursor - 1;
+    size_t i = initial;
+    size_t decLines = 0;
+    // skip spaces backwards
+    for (; i <= initial; i--) {
+      char c = E_getChar(e, i);
+      if (isspace(c)) {
+        if (c == '\n') {
+          decLines++;
+        }
+      } else {
+        break; 
+      }
+    }
+    for (; i <= initial; i--) {
+      if (isspace(E_getChar(e, i))) {
+        break;
+      }
+    }
+    e->cursor = i + 1;
+    for (int j = 0; j < decLines; j++) {
+      decVisibleLine(e);
+    }
+    updateScreenLeftBorderOffsetX(e);
+    e->desiredCursorOffsetX = 0;
+  }
+}
+
+void moveWordForward(E *e) {
+  size_t len = E_getTextLen(e);
+  if (e->cursor < len) {
+    size_t initial = e->cursor;
+    size_t i = initial;
+    size_t incLines = 0;
+    // skip spaces forward
+    for (; i <= len; i++) {
+      char c = E_getChar(e, i);
+      if (isspace(c)) {
+        if (c == '\n') {
+          incLines++;
+        }
+      } else {
+        break;
+      }
+    }
+    for (; i < len; i++) {
+      if (isspace(E_getChar(e, i))) {
+        break;
+      }
+    }
+    e->cursor = i;
+    for (int j = 0; j < incLines; j++) {
+      incVisibleLine(e);
+    }
     updateScreenLeftBorderOffsetX(e);
     e->desiredCursorOffsetX = 0;
   }
